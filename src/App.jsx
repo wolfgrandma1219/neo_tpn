@@ -3,7 +3,7 @@ import {
   User, Lock, Settings, Users, FileText, Plus, 
   Search, ArrowLeft, Save, CheckCircle, XCircle, 
   Edit, AlertTriangle, Syringe, Trash2, CloudUpload,
-  Beaker, Calculator, Activity, RefreshCw
+  Beaker, Calculator, Activity, RefreshCw, ShieldCheck
 } from 'lucide-react';
 
 // === 未來串接 Google Apps Script 的網址請填入此處 ===
@@ -45,6 +45,10 @@ const INITIAL_MEDICATIONS = [
   { id: 'm6', name: 'Heparin (純量)', formula: '[heparin]', unit: 'IU', isActive: true, seq: 6 },
 ];
 
+const INITIAL_AUDIT_RULES = [
+  { id: 'ar1', condition: '[na] >= [p] * 2', description: '因使用glycophos，鈉處方劑量應大於等於磷的2倍', isActive: true },
+];
+
 const ELEMENTS = [
   { key: 'kcal', label: '熱量', unit1: 'kcal/L', unit2: 'Kcal/kg', isGIR: false },
   { key: 'cho', label: 'CHO', unit1: 'g/L', unit2: 'GIR mg/kg/min', isGIR: true },
@@ -66,12 +70,16 @@ const OTHER_ADDITIONS = [
 
 // --- 工具函數 ---
 const generateId = (prefix) => `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-const getAgeInDays = (dob) => {
+
+// 修正：支援傳入 targetDate 進行精準的日齡計算，以避免開啟舊處方時日齡亂跳
+const getAgeInDays = (dob, targetDate) => {
   if (!dob) return 0;
-  const diffTime = Math.abs(new Date() - new Date(dob));
+  const endDate = targetDate ? new Date(targetDate) : new Date();
+  const diffTime = Math.abs(endDate - new Date(dob));
   const days = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
   return isNaN(days) ? 0 : days;
 };
+
 const getTodayLocal = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -126,6 +134,22 @@ const evaluateFormula = (formulaString, formData) => {
   }
 };
 
+const evaluateCondition = (conditionString, formData) => {
+  if (!conditionString) return true;
+  try {
+    let mathStr = conditionString;
+    ELEMENTS.forEach(el => {
+      const dose = parseFloat(formData.elements[el.key]?.dose) || 0;
+      const regex = new RegExp(`\\[${el.key}\\]`, 'gi');
+      mathStr = mathStr.replace(regex, dose);
+    });
+    const result = new Function('return ' + mathStr)();
+    return !!result;
+  } catch (error) {
+    console.warn("稽核規則運算錯誤:", conditionString, error);
+    return false; // 若語法錯誤則阻擋，避免風險
+  }
+};
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -137,6 +161,7 @@ export default function App() {
     limits: INITIAL_LIMITS,
     packages: INITIAL_PACKAGES,
     medications: INITIAL_MEDICATIONS, 
+    auditRules: INITIAL_AUDIT_RULES,
     patients: [],
     admissions: [],
     orders: []
@@ -177,6 +202,7 @@ export default function App() {
           limits: safeLimits,
           packages: result.data.packages?.length > 0 ? result.data.packages : INITIAL_PACKAGES,
           medications: result.data.medications?.length > 0 ? result.data.medications : INITIAL_MEDICATIONS, 
+          auditRules: result.data.auditRules?.length > 0 ? result.data.auditRules : INITIAL_AUDIT_RULES,
           patients: normalizedPatients,
           admissions: normalizedAdmissions,
           orders: normalizedOrders
@@ -328,6 +354,11 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
   const [testData, setTestData] = useState({ V: '300', W: '2.5', aa: '35', cho: '100', na: '30' });
   const [testResult, setTestResult] = useState(null);
 
+  // 稽核規則相關 State
+  const [newRule, setNewRule] = useState({ condition: '', description: '', isActive: true });
+  const [editingRuleId, setEditingRuleId] = useState(null);
+  const [editingRuleData, setEditingRuleData] = useState({});
+
   useEffect(() => { setLocalLimits(db.limits); }, [db.limits]);
 
   const handleSaveLimits = () => {
@@ -391,6 +422,46 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
     const res = evaluateFormula(newMed.formula, mockFormData);
     if (res === null) setTestResult('❌ 語法錯誤解析失敗');
     else setTestResult(`✅ 計算結果: ${res} ${newMed.unit}`);
+  };
+
+  const handleAddRule = () => {
+    if (!newRule.condition || !newRule.description) return showAlert('規則條件與說明為必填');
+    const ruleToAdd = { id: generateId('ar'), ...newRule };
+    apiSync('saveRecord', 'auditRules', 'id', ruleToAdd, () => {
+      setDb(p => ({ ...p, auditRules: [...p.auditRules, ruleToAdd] }));
+      setNewRule({ condition: '', description: '', isActive: true });
+      showAlert('處方稽核規則已新增');
+    });
+  };
+
+  const handleDeleteRule = (id) => {
+    if(confirm('確定要刪除此稽核規則嗎？')) {
+      apiSync('deleteRecord', 'auditRules', 'id', { id }, () => {
+        setDb(p => ({...p, auditRules: p.auditRules.filter(r => String(r.id) !== String(id))}));
+      });
+    }
+  };
+
+  const toggleRuleActive = (rule) => {
+    const ruleToSave = { ...rule, isActive: !rule.isActive };
+    apiSync('saveRecord', 'auditRules', 'id', ruleToSave, () => {
+      setDb(p => ({ ...p, auditRules: p.auditRules.map(r => r.id === rule.id ? ruleToSave : r) }));
+    });
+  };
+
+  const startEditRule = (rule) => {
+    setEditingRuleId(rule.id);
+    setEditingRuleData({ condition: rule.condition, description: rule.description });
+  };
+
+  const saveEditRule = (rule) => {
+    if (!editingRuleData.condition || !editingRuleData.description) return showAlert('條件與說明不能為空');
+    const ruleToSave = { ...rule, ...editingRuleData };
+    apiSync('saveRecord', 'auditRules', 'id', ruleToSave, () => {
+      setDb(p => ({ ...p, auditRules: p.auditRules.map(r => r.id === rule.id ? ruleToSave : r) }));
+      setEditingRuleId(null);
+      showAlert('稽核規則已更新');
+    });
   };
 
   return (
@@ -503,6 +574,88 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
                   </td>
                 </tr>
               ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* 區塊 2.5: 處方稽核規則管理 */}
+      <div className="mb-10 bg-rose-50 p-5 rounded-xl border border-rose-100">
+        <div className="flex justify-between items-center mb-4 border-b border-rose-200 pb-3">
+          <h3 className="text-lg font-bold text-rose-900 flex items-center gap-2"><ShieldCheck size={20}/> 處方稽核規則設定</h3>
+        </div>
+        
+        <div className="bg-white p-5 rounded-lg border-2 border-rose-200 mb-6 flex flex-col gap-4 shadow-sm">
+          <h4 className="font-bold text-rose-800 border-b pb-2">新增稽核規則</h4>
+          <div className="flex flex-wrap gap-4 items-end">
+            <div className="flex-1 min-w-[200px]">
+              <label className="block text-xs font-bold text-gray-600 mb-1">條件判斷式 (例如: [na]&gt;=[p]*2)</label>
+              <input type="text" value={newRule.condition} onChange={e=>setNewRule({...newRule, condition: e.target.value})} className="border-2 p-2 rounded-lg w-full font-mono focus:border-rose-500 outline-none bg-gray-50 text-sm" placeholder="e.g. [na] >= [p] * 2" />
+            </div>
+            <div className="flex-2 min-w-[300px]">
+              <label className="block text-xs font-bold text-gray-600 mb-1">規則說明 (違反時的提示訊息)</label>
+              <input type="text" value={newRule.description} onChange={e=>setNewRule({...newRule, description: e.target.value})} className="border-2 p-2 rounded-lg w-full focus:border-rose-500 outline-none font-bold text-gray-800 text-sm" placeholder="e.g. 因使用glycophos" />
+            </div>
+            <div className="flex items-center gap-2 mb-2">
+              <input type="checkbox" checked={newRule.isActive} onChange={e=>setNewRule({...newRule, isActive: e.target.checked})} className="w-5 h-5 cursor-pointer text-rose-600 rounded focus:ring-rose-500" id="newRuleActive"/>
+              <label htmlFor="newRuleActive" className="text-sm font-bold text-gray-700 cursor-pointer">預設生效</label>
+            </div>
+            <button onClick={handleAddRule} className="bg-rose-600 text-white px-5 py-2 rounded-lg hover:bg-rose-700 font-bold shadow transition ml-auto">
+              <Plus size={18} className="inline mr-1"/> 新增規則
+            </button>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg border border-rose-100 overflow-hidden shadow-sm">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-rose-50 text-rose-900 border-b border-rose-100">
+              <tr>
+                <th className="p-3 w-16 text-center">生效</th>
+                <th className="p-3 w-1/3">條件判斷式 (Formula)</th>
+                <th className="p-3 w-1/2">說明 (Description)</th>
+                <th className="p-3 text-center w-32">操作</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {db.auditRules.map(r => {
+                const isEditing = editingRuleId === r.id;
+                return (
+                <tr key={r.id} className="hover:bg-rose-50/50 transition">
+                  <td className="p-3 text-center">
+                    <input type="checkbox" checked={r.isActive} onChange={() => toggleRuleActive(r)} className="w-4 h-4 cursor-pointer text-rose-600 rounded" />
+                  </td>
+                  <td className="p-3">
+                    {isEditing ? (
+                      <input type="text" value={editingRuleData.condition} onChange={e => setEditingRuleData({...editingRuleData, condition: e.target.value})} className="border-2 p-1.5 rounded-lg w-full text-xs font-mono focus:border-rose-500 outline-none" />
+                    ) : (
+                      <span className="font-mono text-xs text-gray-600 bg-gray-50 px-2 py-1 rounded border">{r.condition}</span>
+                    )}
+                  </td>
+                  <td className="p-3">
+                    {isEditing ? (
+                      <input type="text" value={editingRuleData.description} onChange={e => setEditingRuleData({...editingRuleData, description: e.target.value})} className="border-2 p-1.5 rounded-lg w-full text-sm font-bold text-gray-800 focus:border-rose-500 outline-none" />
+                    ) : (
+                      <span className="font-bold text-gray-800">{r.description}</span>
+                    )}
+                  </td>
+                  <td className="p-3 text-center">
+                    <div className="flex items-center justify-center gap-2">
+                      {isEditing ? (
+                        <>
+                          <button onClick={() => saveEditRule(r)} className="text-green-700 bg-green-100 p-1.5 rounded-lg font-bold shadow-sm hover:bg-green-200 transition" title="儲存修改"><Save size={16}/></button>
+                          <button onClick={() => setEditingRuleId(null)} className="text-gray-500 bg-gray-100 p-1.5 rounded-lg font-bold shadow-sm hover:bg-gray-200 transition" title="取消"><XCircle size={16}/></button>
+                        </>
+                      ) : (
+                        <>
+                          <button onClick={() => startEditRule(r)} className="text-gray-500 hover:text-blue-600 p-1.5 rounded-lg hover:bg-blue-100 transition" title="修改"><Edit size={16}/></button>
+                          <button onClick={() => handleDeleteRule(r.id)} className="text-red-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition" title="刪除"><Trash2 size={16}/></button>
+                        </>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              )})}
+              {db.auditRules.length === 0 && <tr><td colSpan="4" className="p-6 text-center text-gray-400 font-bold">尚無設定稽核規則</td></tr>}
             </tbody>
           </table>
         </div>
@@ -966,7 +1119,9 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
 
   const isReadOnly = formData.status !== 'Draft';
   const [validationErrors, setValidationErrors] = useState({});
-  const ageDays = getAgeInDays(patient.dob);
+  
+  // 這裡修正：呼叫 getAgeInDays 時，傳入處方單設定的開始日期 (startDate)
+  const ageDays = getAgeInDays(patient.dob, formData.startDate);
 
   useEffect(() => {
     const vol = parseFloat(formData.rate) * 24;
@@ -1073,6 +1228,16 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
     });
     setValidationErrors(errors);
     if (Object.keys(errors).length > 0) { showAlert('部分劑量超出安全範圍，請修正後再提交'); return false; }
+    
+    // --- 執行處方自訂稽核規則 ---
+    const activeRules = db.auditRules.filter(r => r.isActive);
+    for (let rule of activeRules) {
+      if (!evaluateCondition(rule.condition, formData)) {
+        showAlert(`【稽核警示】${rule.description} (違反規則: ${rule.condition})`);
+        return false;
+      }
+    }
+
     return true;
   };
 
