@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   User, Lock, Settings, Users, FileText, Plus, 
   Search, ArrowLeft, Save, CheckCircle, XCircle, 
   Edit, AlertTriangle, Syringe, Trash2, CloudUpload,
-  Beaker, Calculator, Activity
+  Beaker, Calculator, Activity, RefreshCw
 } from 'lucide-react';
 
 // === 未來串接 Google Apps Script 的網址請填入此處 ===
@@ -35,7 +35,7 @@ const INITIAL_PACKAGES = [
   { code: 'C01', name: 'Custom (自訂)', kcal: 0, cho: 0, aa: 0, na: 0, k: 0, cl: 0, ca: 0, p: 0, mg: 0 },
 ];
 
-// 【新增】初始化藥品調配公式資料
+// 初始化藥品調配公式資料
 const INITIAL_MEDICATIONS = [
   { id: 'm1', name: 'Aminosteril(R) 10%', formula: '[aa] * (V / 1000) / 0.1', unit: 'mL', isActive: true, seq: 1 },
   { id: 'm2', name: 'Dextrose 50%', formula: '[cho] * (V / 1000) / 0.5', unit: 'mL', isActive: true, seq: 2 },
@@ -93,42 +93,36 @@ const cleanTimeString = (timeString) => {
   return str;
 };
 
-// 【核心】動態公式安全解析引擎
+// 動態公式安全解析引擎
 const evaluateFormula = (formulaString, formData) => {
   if (!formulaString) return 0;
   try {
     let mathStr = formulaString;
     
-    // 替換 V (調配體積) 與 W (體重)
     const prepVol = parseFloat(formData.prepVol) || 0;
     const weight = parseFloat(formData.weight) || 0;
     mathStr = mathStr.replace(/V/g, prepVol);
     mathStr = mathStr.replace(/W/g, weight);
 
-    // 替換 ELEMENTS (處方濃度 conc)
     ELEMENTS.forEach(el => {
       const conc = formData.elements[el.key]?.conc || 0;
-      const regex = new RegExp(`\\[${el.key}\\]`, 'gi'); // 支援大小寫不敏感
+      const regex = new RegExp(`\\[${el.key}\\]`, 'gi');
       mathStr = mathStr.replace(regex, conc);
     });
 
-    // 替換 OTHER_ADDITIONS (直接數值)
     OTHER_ADDITIONS.forEach(item => {
       const val = parseFloat(formData.otherAdditions[item.key]) || 0;
       const regex = new RegExp(`\\[${item.key}\\]`, 'gi');
       mathStr = mathStr.replace(regex, val);
     });
 
-    // 安全運算
     const result = new Function('return ' + mathStr)();
-    
-    // 確保回傳為合理的數字，避免 NaN 或 Infinity
     if (isNaN(result) || !isFinite(result)) return 0;
     return result < 0 ? 0 : Number(result.toFixed(1));
 
   } catch (error) {
     console.warn("公式運算錯誤:", formulaString, error);
-    return null; // 回傳 null 代表公式解析失敗
+    return null;
   }
 };
 
@@ -142,13 +136,9 @@ export default function App() {
     users: INITIAL_USERS,
     limits: INITIAL_LIMITS,
     packages: INITIAL_PACKAGES,
-    medications: INITIAL_MEDICATIONS, // 新增藥品設定
-    patients: [
-      { mrn: '0123456', name: '測試嬰', dob: '2026-02-15', gender: '男' }
-    ],
-    admissions: [
-      { encounterId: 'I26020001', mrn: '0123456', adminDate: '2026-02-15', dischargeDate: '', bed: 'NICU01', isClosed: false }
-    ],
+    medications: INITIAL_MEDICATIONS, 
+    patients: [],
+    admissions: [],
     orders: []
   });
 
@@ -161,6 +151,46 @@ export default function App() {
     setAlertMsg(msg);
     setTimeout(() => setAlertMsg(''), 4000);
   };
+
+  const fetchAllData = useCallback(async (showLoading = true) => {
+    if (showLoading) setIsSyncing(true);
+    try {
+      const response = await fetch(GAS_URL, {
+        method: 'POST',
+        body: JSON.stringify({ action: 'getAllData' })
+      });
+      const result = await response.json();
+      
+      if (result.success) {
+        const fetchedLimits = result.data.limits || {};
+        const safeLimits = Object.keys(fetchedLimits).length > 0 ? { ...INITIAL_LIMITS, ...fetchedLimits } : INITIAL_LIMITS;
+        const normalizedPatients = (result.data.patients || []).map(p => ({ ...p, dob: cleanDateString(p.dob) }));
+        const normalizedAdmissions = (result.data.admissions || []).map(a => ({ ...a, adminDate: cleanDateString(a.adminDate), dischargeDate: cleanDateString(a.dischargeDate) }));
+        const normalizedOrders = (result.data.orders || []).map(o => ({ 
+          ...o, 
+          startDate: cleanDateString(o.startDate),
+          startTime: cleanTimeString(o.startTime)
+        }));
+
+        setDb({
+          users: result.data.users?.length > 0 ? result.data.users : INITIAL_USERS,
+          limits: safeLimits,
+          packages: result.data.packages?.length > 0 ? result.data.packages : INITIAL_PACKAGES,
+          medications: result.data.medications?.length > 0 ? result.data.medications : INITIAL_MEDICATIONS, 
+          patients: normalizedPatients,
+          admissions: normalizedAdmissions,
+          orders: normalizedOrders
+        });
+      } else {
+        throw new Error(result.error);
+      }
+    } catch (error) {
+      console.error("連線錯誤:", error);
+      if (showLoading) showAlert(`無法連線至資料庫，使用預設或快取資料。`);
+    } finally {
+      setIsSyncing(false);
+    }
+  }, []);
 
   const apiSync = async (action, table, pk, data, successCallback) => {
     setIsSyncing(true);
@@ -178,7 +208,6 @@ export default function App() {
     } catch (error) {
       console.error("API 錯誤:", error);
       showAlert(`連線存檔失敗: ${error.message} (目前以本地模式繼續)`);
-      // 離線降級處理：即使 API 失敗也執行 Callback，讓前端不卡死
       successCallback(); 
     } finally {
       setIsSyncing(false);
@@ -186,48 +215,16 @@ export default function App() {
   };
 
   useEffect(() => {
-    const fetchAllData = async () => {
-      setIsSyncing(true);
-      try {
-        const response = await fetch(GAS_URL, {
-          method: 'POST',
-          body: JSON.stringify({ action: 'getAllData' })
-        });
-        const result = await response.json();
-        
-        if (result.success) {
-          const fetchedLimits = result.data.limits || {};
-          const safeLimits = Object.keys(fetchedLimits).length > 0 ? { ...INITIAL_LIMITS, ...fetchedLimits } : INITIAL_LIMITS;
-          const normalizedPatients = (result.data.patients || []).map(p => ({ ...p, dob: cleanDateString(p.dob) }));
-          const normalizedAdmissions = (result.data.admissions || []).map(a => ({ ...a, adminDate: cleanDateString(a.adminDate), dischargeDate: cleanDateString(a.dischargeDate) }));
-          const normalizedOrders = (result.data.orders || []).map(o => ({ 
-            ...o, 
-            startDate: cleanDateString(o.startDate),
-            startTime: cleanTimeString(o.startTime)
-          }));
+    // 初始載入
+    fetchAllData(true);
 
-          setDb({
-            users: result.data.users?.length > 0 ? result.data.users : INITIAL_USERS,
-            limits: safeLimits,
-            packages: result.data.packages?.length > 0 ? result.data.packages : INITIAL_PACKAGES,
-            medications: result.data.medications?.length > 0 ? result.data.medications : INITIAL_MEDICATIONS, // 載入藥品公式
-            patients: normalizedPatients,
-            admissions: normalizedAdmissions,
-            orders: normalizedOrders
-          });
-        } else {
-          throw new Error(result.error);
-        }
-      } catch (error) {
-        console.error("連線錯誤:", error);
-        showAlert(`無法連線至資料庫，使用預設模擬資料。`);
-      } finally {
-        setIsSyncing(false);
-      }
-    };
+    // 設定背景輪詢：每 30 秒自動背景更新一次
+    const intervalId = setInterval(() => {
+      fetchAllData(false);
+    }, 30000);
 
-    fetchAllData();
-  }, []);
+    return () => clearInterval(intervalId);
+  }, [fetchAllData]);
 
   const handleLogin = (username, password) => {
     const found = db.users.find(u => String(u.username) === String(username) && String(u.password) === String(password));
@@ -258,7 +255,10 @@ export default function App() {
             {isSyncing && <span className="text-xs bg-blue-700 px-2 py-1 rounded animate-pulse">連線同步中...</span>}
           </div>
           <div className="flex items-center gap-4">
-            <span className="text-sm bg-blue-800 px-3 py-1 rounded-full border border-blue-700 shadow-inner">
+            <button onClick={() => fetchAllData(true)} className="flex items-center gap-1 hover:bg-blue-700 transition text-sm font-bold bg-blue-800 px-3 py-1.5 rounded-full border border-blue-700 cursor-pointer">
+              <RefreshCw size={16} className={isSyncing ? "animate-spin" : ""} /> 手動更新
+            </button>
+            <span className="text-sm bg-blue-800 px-3 py-1 rounded-full border border-blue-700 shadow-inner hidden md:inline-block">
               {user.name} ({user.role})
             </span>
             {user.role === 'admin' && (
@@ -274,9 +274,8 @@ export default function App() {
       <main className="p-4 md:p-6 max-w-7xl mx-auto">
         {view === 'login' && <LoginView onLogin={handleLogin} />}
         {view === 'settings' && <SettingsView db={db} setDb={setDb} apiSync={apiSync} showAlert={showAlert} />}
-        {view === 'patients' && <PatientsView db={db} setDb={setDb} apiSync={apiSync} showAlert={showAlert} onSelect={(p) => { setSelectedPatient(p); setView('admissions'); }} />}
-        {view === 'admissions' && <AdmissionsView db={db} setDb={setDb} apiSync={apiSync} showAlert={showAlert} patient={selectedPatient} onBack={() => setView('patients')} onSelect={(a) => { setSelectedAdmission(a); setView('orders'); }} />}
-        {view === 'orders' && <OrdersView db={db} setDb={setDb} apiSync={apiSync} patient={selectedPatient} admission={selectedAdmission} user={user} onBack={() => setView('admissions')} onEdit={(o) => { setEditingOrder(o); setView('orderForm'); }} showAlert={showAlert} />}
+        {view === 'patients' && <CombinedAdmissionsView db={db} setDb={setDb} apiSync={apiSync} showAlert={showAlert} onSelect={(p, a) => { setSelectedPatient(p); setSelectedAdmission(a); setView('orders'); }} />}
+        {view === 'orders' && <OrdersView db={db} setDb={setDb} apiSync={apiSync} patient={selectedPatient} admission={selectedAdmission} user={user} onBack={() => setView('patients')} onEdit={(o) => { setEditingOrder(o); setView('orderForm'); }} showAlert={showAlert} />}
         {view === 'globalOrders' && <GlobalOrdersView db={db} user={user} onEdit={(o, p, a) => { setEditingOrder(o); setSelectedPatient(p); setSelectedAdmission(a); setView('orderForm'); }} />}
         {view === 'orderForm' && <OrderFormView db={db} setDb={setDb} apiSync={apiSync} patient={selectedPatient} admission={selectedAdmission} user={user} order={editingOrder} onBack={() => setView(user.role === 'pharmacist' ? 'globalOrders' : 'orders')} showAlert={showAlert} />}
       </main>
@@ -320,22 +319,17 @@ function LoginView({ onLogin }) {
 }
 
 // ==========================================
-// 2. 設定畫面 (Admin) 包含藥品公式設定
+// 2. 設定畫面 (Admin)
 // ==========================================
 function SettingsView({ db, setDb, apiSync, showAlert }) {
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'doctor', name: '' });
   const [localLimits, setLocalLimits] = useState(db.limits);
-  
-  // 新增藥品狀態
   const [newMed, setNewMed] = useState({ name: '', formula: '', unit: 'mL', seq: db.medications.length + 1 });
-  
-  // 公式測試器狀態
   const [testData, setTestData] = useState({ V: '300', W: '2.5', aa: '35', cho: '100', na: '30' });
   const [testResult, setTestResult] = useState(null);
 
   useEffect(() => { setLocalLimits(db.limits); }, [db.limits]);
 
-  // --- 存檔與刪除邏輯 ---
   const handleSaveLimits = () => {
     apiSync('saveRecord', 'limits', 'element', localLimits, () => {
       setDb(p => ({ ...p, limits: localLimits }));
@@ -367,13 +361,10 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
 
   const handleAddMedication = () => {
     if (!newMed.name || !newMed.formula) return showAlert('藥品名稱與公式為必填');
-    
-    // 儲存前先測試一次公式語法
     const mockFormData = { prepVol: 100, weight: 1, elements: ELEMENTS.reduce((acc, el) => ({...acc, [el.key]:{conc:1}}), {}), otherAdditions: {} };
     if (evaluateFormula(newMed.formula, mockFormData) === null) {
       return showAlert('公式語法錯誤，請檢查符號與括號是否正確！');
     }
-
     const medToAdd = { id: generateId('med'), ...newMed, isActive: true };
     apiSync('saveRecord', 'medications', 'id', medToAdd, () => {
       setDb(p => ({ ...p, medications: [...p.medications, medToAdd].sort((a,b)=>a.seq-b.seq) }));
@@ -390,16 +381,11 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
     }
   };
 
-  // 測試公式按鈕
   const runTest = () => {
     if (!newMed.formula) return setTestResult('請先輸入公式');
     const mockFormData = {
-      prepVol: testData.V,
-      weight: testData.W,
-      elements: ELEMENTS.reduce((acc, el) => {
-        acc[el.key] = { conc: testData[el.key] || 0 };
-        return acc;
-      }, {}),
+      prepVol: testData.V, weight: testData.W,
+      elements: ELEMENTS.reduce((acc, el) => { acc[el.key] = { conc: testData[el.key] || 0 }; return acc; }, {}),
       otherAdditions: {}
     };
     const res = evaluateFormula(newMed.formula, mockFormData);
@@ -435,13 +421,12 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
         </div>
       </div>
 
-      {/* 區塊 2: 藥品公式管理 (新增功能) */}
+      {/* 區塊 2: 藥品公式管理 */}
       <div className="mb-10 bg-indigo-50 p-5 rounded-xl border border-indigo-100">
         <div className="flex justify-between items-center mb-4 border-b border-indigo-200 pb-3">
           <h3 className="text-lg font-bold text-indigo-900 flex items-center gap-2"><Calculator size={20}/> 藥局調配藥品與公式管理</h3>
         </div>
         
-        {/* 公式說明 */}
         <div className="bg-white p-4 rounded-lg text-sm text-gray-700 mb-6 shadow-sm border border-indigo-100">
           <p className="font-bold text-indigo-800 mb-2">可用公式變數 (請區分大小寫)：</p>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2 font-mono text-xs">
@@ -455,7 +440,6 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
           </div>
         </div>
 
-        {/* 新增藥品與公式測試 */}
         <div className="bg-white p-5 rounded-lg border-2 border-indigo-200 mb-6 flex flex-col gap-4 shadow-sm">
           <h4 className="font-bold text-indigo-800 border-b pb-2">新增調配藥品</h4>
           <div className="flex flex-wrap gap-4 items-end">
@@ -477,7 +461,6 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
             </div>
           </div>
           
-          {/* 測試區 */}
           <div className="bg-indigo-50 p-3 rounded-lg flex items-center gap-3 border border-indigo-100 flex-wrap">
             <span className="text-sm font-bold text-indigo-800">公式測試器 &rarr;</span>
             <div className="flex gap-2 items-center text-xs font-mono">
@@ -495,7 +478,6 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
           </div>
         </div>
 
-        {/* 藥品列表 */}
         <div className="bg-white rounded-lg border border-indigo-100 overflow-hidden shadow-sm">
           <table className="w-full text-left text-sm">
             <thead className="bg-indigo-50 text-indigo-900 border-b border-indigo-100">
@@ -526,7 +508,7 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
         </div>
       </div>
 
-      {/* 區塊 3: 操作者管理 (維持原樣) */}
+      {/* 區塊 3: 操作者管理 */}
       <div>
         <h3 className="text-lg font-bold mb-4 border-b pb-2 flex items-center gap-2"><Users size={20}/> 操作者管理</h3>
         <div className="bg-gray-50 p-5 rounded-xl border border-gray-200 flex gap-4 items-end flex-wrap mb-6">
@@ -581,120 +563,259 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
 }
 
 // ==========================================
-// 3. 病人與就醫紀錄列表 (精簡以節省篇幅，邏輯不變)
+// 3. 病人與就醫紀錄列表 (智能整併表單版)
 // ==========================================
-function PatientsView({ db, apiSync, setDb, showAlert, onSelect }) {
+function CombinedAdmissionsView({ db, apiSync, setDb, showAlert, onSelect }) {
   const [search, setSearch] = useState('');
-  const [showNew, setShowNew] = useState(false);
-  const [newPt, setNewPt] = useState({ mrn: '', name: '', dob: '', gender: '男' });
+  const [showForm, setShowForm] = useState(false);
 
-  const filtered = db.patients.filter(p => (p.mrn != null && String(p.mrn).includes(search)) || (p.name != null && String(p.name).includes(search)));
-  const handleSave = () => {
-    if(newPt.mrn.length < 1 || newPt.mrn.length > 7) return showAlert('病歷號須為7碼內');
-    if(db.patients.find(p => String(p.mrn) === String(newPt.mrn))) return showAlert('病歷號已存在');
-    apiSync('saveRecord', 'patients', 'mrn', newPt, () => {
-      setDb(p => ({ ...p, patients: [...p.patients, newPt] })); setShowNew(false); setNewPt({ mrn: '', name: '', dob: '', gender: '男' }); showAlert('建立成功！');
-    });
-  };
+  // 負責處理行內編輯的 State
+  const [editingAdmId, setEditingAdmId] = useState(null);
+  const [editingAdmData, setEditingAdmData] = useState({ bed: '', isClosed: false });
 
-  return (
-    <div className="space-y-4">
-      <div className="flex justify-between items-center bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
-        <div className="relative w-80">
-          <Search className="absolute left-4 top-3 text-gray-400" size={18} />
-          <input type="text" placeholder="搜尋病歷號或姓名..." value={search} onChange={e=>setSearch(e.target.value)} className="pl-12 pr-4 py-2.5 border-2 rounded-xl w-full focus:border-blue-500 outline-none font-bold" />
-        </div>
-        <button onClick={() => setShowNew(true)} className="bg-blue-700 text-white px-5 py-2.5 rounded-xl flex items-center gap-2 hover:bg-blue-800 font-bold shadow-md transition">
-          <Plus size={18} /> 建立新病人
-        </button>
-      </div>
-      {showNew && (
-        <div className="bg-white p-5 rounded-2xl shadow-lg border-2 border-blue-200 flex gap-4 items-end flex-wrap">
-          <div><label className="block text-xs font-bold text-gray-600 mb-1">病歷號 (7碼)</label><input type="text" value={newPt.mrn} onChange={e=>setNewPt({...newPt, mrn: e.target.value})} className="border-2 p-2 rounded-lg w-32 focus:border-blue-500 outline-none font-bold text-blue-900" maxLength={7} /></div>
-          <div><label className="block text-xs font-bold text-gray-600 mb-1">姓名</label><input type="text" value={newPt.name} onChange={e=>setNewPt({...newPt, name: e.target.value})} className="border-2 p-2 rounded-lg w-32 focus:border-blue-500 outline-none font-bold" maxLength={6} /></div>
-          <div><label className="block text-xs font-bold text-gray-600 mb-1">生日</label><input type="date" value={newPt.dob} onChange={e=>setNewPt({...newPt, dob: e.target.value})} className="border-2 p-2 rounded-lg w-40 focus:border-blue-500 outline-none font-bold" /></div>
-          <div><label className="block text-xs font-bold text-gray-600 mb-1">性別</label>
-            <select value={newPt.gender} onChange={e=>setNewPt({...newPt, gender: e.target.value})} className="border-2 p-2 rounded-lg w-24 focus:border-blue-500 outline-none font-bold">
-              <option>男</option><option>女</option>
-            </select>
-          </div>
-          <button onClick={handleSave} className="bg-green-600 text-white px-6 py-2 rounded-lg hover:bg-green-700 font-bold shadow transition mb-0.5"><Save size={18}/></button>
-          <button onClick={() => setShowNew(false)} className="text-gray-500 px-4 font-bold hover:text-gray-800 mb-2">取消</button>
-        </div>
-      )}
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-        <table className="w-full text-left">
-          <thead className="bg-gray-50 text-gray-600 border-b border-gray-200">
-            <tr><th className="p-4 font-bold">病歷號</th><th className="p-4 font-bold">姓名</th><th className="p-4 font-bold text-center">性別</th><th className="p-4 font-bold">出生日期</th><th className="p-4 font-bold text-right">操作</th></tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {filtered.map(p => (
-              <tr key={p.mrn} className="hover:bg-blue-50 transition">
-                <td className="p-4 font-black text-blue-900 text-lg">{p.mrn}</td><td className="p-4 font-bold text-gray-800">{p.name}</td><td className="p-4 text-center font-bold">{p.gender}</td><td className="p-4 font-mono text-gray-600">{p.dob}</td>
-                <td className="p-4 text-right"><button onClick={() => onSelect(p)} className="text-white bg-blue-600 px-4 py-1.5 rounded-lg font-bold shadow hover:bg-blue-700 transition">選擇就醫序號 &rarr;</button></td>
-              </tr>
-            ))}
-            {filtered.length === 0 && <tr><td colSpan="5" className="p-10 text-center text-gray-400 font-bold">查無資料</td></tr>}
-          </tbody>
-        </table>
-      </div>
-    </div>
+  const getToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
+  
+  // 統一的表單 State
+  const [formData, setFormData] = useState({
+    mrn: '', name: '', dob: '', gender: '男',
+    encounterId: '', bed: '', adminDate: getToday(), isClosed: false
+  });
+  
+  const [isExistingPt, setIsExistingPt] = useState(false);
+
+  const combinedList = db.admissions.map(adm => {
+    const pt = db.patients.find(p => String(p.mrn) === String(adm.mrn)) || {};
+    return { ...adm, patient: pt };
+  }).sort((a, b) => new Date(b.adminDate) - new Date(a.adminDate));
+
+  const filtered = combinedList.filter(item => 
+    (item.mrn != null && String(item.mrn).includes(search)) || 
+    (item.patient.name != null && String(item.patient.name).includes(search)) ||
+    (item.encounterId != null && String(item.encounterId).includes(search)) ||
+    (item.bed != null && String(item.bed).includes(search))
   );
-}
 
-function AdmissionsView({ db, apiSync, setDb, showAlert, patient, onBack, onSelect }) {
-  const [showNew, setShowNew] = useState(false);
-  const [newAdm, setNewAdm] = useState({ encounterId: '', adminDate: '', dischargeDate: '', bed: '', isClosed: false });
-  const [editingAdm, setEditingAdm] = useState(null); 
-  const admissions = db.admissions.filter(a => String(a.mrn) === String(patient.mrn));
+  const handleMrnChange = (e) => {
+    const val = e.target.value;
+    const existingPt = db.patients.find(p => String(p.mrn) === String(val));
+    
+    if (existingPt) {
+      setFormData(prev => ({
+        ...prev, mrn: val, name: existingPt.name, dob: existingPt.dob, gender: existingPt.gender
+      }));
+      setIsExistingPt(true);
+    } else {
+      setFormData(prev => ({
+        ...prev, mrn: val, name: prev.name && isExistingPt ? '' : prev.name, dob: prev.dob && isExistingPt ? '' : prev.dob
+      }));
+      setIsExistingPt(false);
+    }
+  };
 
   const handleSave = () => {
-    if(!newAdm.encounterId || !newAdm.adminDate || !newAdm.bed) return showAlert('請填寫必填欄位');
-    const recordToSave = { ...newAdm, mrn: patient.mrn };
+    if(!formData.mrn || !formData.encounterId || !formData.bed || !formData.adminDate) return showAlert('請填寫帶星號(*)的必填欄位');
+    if(!isExistingPt && (!formData.name || !formData.dob)) return showAlert('新病人請填寫完整姓名與生日');
+    if(db.admissions.find(a => String(a.encounterId) === String(formData.encounterId))) return showAlert('此就醫序號已存在！');
+
+    const admissionRecord = {
+      encounterId: formData.encounterId, mrn: formData.mrn, adminDate: formData.adminDate, dischargeDate: '', bed: formData.bed, isClosed: false
+    };
+
+    const saveAdmissionOnly = () => {
+      apiSync('saveRecord', 'admissions', 'encounterId', admissionRecord, () => {
+        setDb(p => ({ ...p, admissions: [...p.admissions, admissionRecord] })); 
+        setShowForm(false); 
+        setFormData({ mrn: '', name: '', dob: '', gender: '男', encounterId: '', bed: '', adminDate: getToday(), isClosed: false });
+        setIsExistingPt(false);
+        showAlert('就醫紀錄建立成功！');
+      });
+    };
+
+    if (!isExistingPt) {
+      const patientRecord = { mrn: formData.mrn, name: formData.name, dob: formData.dob, gender: formData.gender };
+      apiSync('saveRecord', 'patients', 'mrn', patientRecord, () => {
+        setDb(p => ({ ...p, patients: [...p.patients, patientRecord] }));
+        saveAdmissionOnly();
+      });
+    } else {
+      saveAdmissionOnly();
+    }
+  };
+
+  // 處理修改儲存邏輯
+  const startEdit = (item) => {
+    setEditingAdmId(item.encounterId);
+    setEditingAdmData({ bed: item.bed, isClosed: item.isClosed });
+  };
+
+  const saveEdit = (item) => {
+    if (!editingAdmData.bed) return showAlert('床號不能為空');
+    
+    const recordToSave = {
+      encounterId: item.encounterId, mrn: item.mrn, adminDate: item.adminDate, dischargeDate: item.dischargeDate || '', bed: editingAdmData.bed, isClosed: editingAdmData.isClosed
+    };
+
     apiSync('saveRecord', 'admissions', 'encounterId', recordToSave, () => {
-      setDb(p => ({ ...p, admissions: [...p.admissions, recordToSave] })); setShowNew(false); setNewAdm({ encounterId: '', adminDate: '', dischargeDate: '', bed: '', isClosed: false });
+      setDb(p => ({
+        ...p, admissions: p.admissions.map(a => String(a.encounterId) === String(item.encounterId) ? recordToSave : a)
+      }));
+      setEditingAdmId(null);
+      showAlert('就醫狀態/床號已成功更新！');
     });
   };
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-4 mb-6">
-        <button onClick={onBack} className="p-2 bg-white shadow-sm border border-gray-200 hover:bg-gray-100 rounded-full transition"><ArrowLeft size={20}/></button>
-        <div>
-          <h2 className="text-2xl font-black text-gray-800">就醫序號</h2>
-          <p className="text-blue-600 font-bold">{patient.name} ({patient.mrn})</p>
+      <div className="flex flex-col md:flex-row justify-between items-center bg-white p-5 rounded-2xl shadow-sm border border-gray-100 gap-4">
+        <div className="relative w-full md:w-96">
+          <Search className="absolute left-4 top-3 text-gray-400" size={18} />
+          <input type="text" placeholder="搜尋病歷號、姓名、就醫序號或床號..." value={search} onChange={e=>setSearch(e.target.value)} className="pl-12 pr-4 py-2.5 border-2 rounded-xl w-full focus:border-blue-500 outline-none font-bold text-gray-800" />
         </div>
-      </div>
-      <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex justify-between items-center">
-        <span className="text-gray-500 font-bold">共 {admissions.length} 筆紀錄</span>
-        <button onClick={() => { setShowNew(true); setEditingAdm(null); }} className="bg-blue-700 text-white px-5 py-2.5 rounded-xl flex items-center gap-2 hover:bg-blue-800 font-bold shadow-md transition">
-          <Plus size={18} /> 建立就醫序號
+        <button onClick={() => setShowForm(true)} className="w-full md:w-auto bg-blue-700 text-white px-6 py-2.5 rounded-xl flex items-center justify-center gap-2 hover:bg-blue-800 font-bold shadow-md transition">
+          <Plus size={18} /> 新增就醫序號
         </button>
       </div>
-      {showNew && (
-        <div className="bg-white p-5 rounded-2xl shadow-lg border-2 border-blue-200 flex gap-4 items-end flex-wrap">
-          <div><label className="block text-xs font-bold text-gray-600 mb-1">* 就醫序號 (9碼)</label><input type="text" value={newAdm.encounterId} onChange={e=>setNewAdm({...newAdm, encounterId: e.target.value})} className="border-2 p-2 rounded-lg w-32 focus:border-blue-500 outline-none font-bold" maxLength={9} /></div>
-          <div><label className="block text-xs font-bold text-gray-600 mb-1">* 入院日期</label><input type="date" value={newAdm.adminDate} onChange={e=>setNewAdm({...newAdm, adminDate: e.target.value})} className="border-2 p-2 rounded-lg w-40 focus:border-blue-500 outline-none font-bold" /></div>
-          <div><label className="block text-xs font-bold text-gray-600 mb-1">* 床號 (6碼)</label><input type="text" value={newAdm.bed} onChange={e=>setNewAdm({...newAdm, bed: e.target.value})} className="border-2 p-2 rounded-lg w-28 focus:border-blue-500 outline-none font-bold" maxLength={6} /></div>
-          <button onClick={handleSave} className="bg-green-600 text-white px-6 py-2 rounded-lg hover:bg-green-700 font-bold shadow transition mb-0.5"><Save size={18}/></button>
-          <button onClick={() => setShowNew(false)} className="text-gray-500 px-4 font-bold hover:text-gray-800 mb-2">取消</button>
-        </div>
-      )}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {admissions.map(a => (
-          <div key={a.encounterId} className={`p-5 rounded-2xl border-2 cursor-pointer transition transform hover:-translate-y-1 ${a.isClosed ? 'bg-gray-50 border-gray-200' : 'bg-white border-blue-200 hover:border-blue-500 shadow-md'}`} onClick={() => onSelect(a)}>
-            <div className="flex justify-between mb-3 items-center">
-              <span className="font-black text-xl text-blue-900 tracking-tight">{a.encounterId}</span>
-              <div className="flex items-center gap-2">
-                {a.isClosed ? <span className="bg-gray-200 text-gray-600 px-3 py-1 text-xs rounded-full font-bold">已結案</span> : <span className="bg-green-100 border border-green-300 text-green-700 px-3 py-1 text-xs rounded-full font-bold shadow-sm">住院中</span>}
+
+      {showForm && (
+        <div className="bg-white p-6 rounded-2xl shadow-xl border-2 border-blue-200 relative animate-in fade-in slide-in-from-top-4 duration-300">
+          <button onClick={() => setShowForm(false)} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><XCircle size={24}/></button>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            {/* 左側：病患基本資料 */}
+            <div className="space-y-4">
+              <h3 className="font-black text-blue-900 border-b-2 border-blue-100 pb-2 flex items-center gap-2">
+                <User size={18}/> 病患基本資料
+                {isExistingPt && <span className="ml-2 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full border border-green-200 font-bold flex items-center gap-1"><CheckCircle size={12}/> 已代入舊檔</span>}
+                {!isExistingPt && formData.mrn.length > 0 && <span className="ml-2 text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full border border-yellow-200 font-bold">新病患</span>}
+              </h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="col-span-2">
+                  <label className="block text-xs font-bold text-gray-600 mb-1">* 病歷號 (MRN)</label>
+                  <input type="text" value={formData.mrn} onChange={handleMrnChange} className="border-2 p-2.5 rounded-lg w-full focus:border-blue-500 outline-none font-black text-blue-900 text-lg transition-colors bg-blue-50 focus:bg-white" maxLength={7} placeholder="請先輸入病歷號" />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">姓名</label>
+                  <input type="text" value={formData.name} onChange={e=>setFormData({...formData, name: e.target.value})} disabled={isExistingPt} className={`border-2 p-2 rounded-lg w-full outline-none font-bold ${isExistingPt ? 'bg-gray-100 text-gray-500 border-gray-200' : 'focus:border-blue-500'}`} maxLength={6} />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">性別</label>
+                  <select value={formData.gender} onChange={e=>setFormData({...formData, gender: e.target.value})} disabled={isExistingPt} className={`border-2 p-2 rounded-lg w-full outline-none font-bold ${isExistingPt ? 'bg-gray-100 text-gray-500 border-gray-200' : 'focus:border-blue-500'}`}>
+                    <option>男</option><option>女</option>
+                  </select>
+                </div>
+                <div className="col-span-2">
+                  <label className="block text-xs font-bold text-gray-600 mb-1">生日 (DOB)</label>
+                  <input type="date" value={formData.dob} onChange={e=>setFormData({...formData, dob: e.target.value})} disabled={isExistingPt} className={`border-2 p-2 rounded-lg w-full outline-none font-bold font-mono ${isExistingPt ? 'bg-gray-100 text-gray-500 border-gray-200' : 'focus:border-blue-500'}`} />
+                </div>
               </div>
             </div>
-            <div className="text-sm font-bold text-gray-600 space-y-1">
-              <p>床號：<span className="text-gray-900 text-lg ml-1">{a.bed}</span></p>
-              <p className="font-mono mt-2 text-xs text-gray-500">In: {a.adminDate}</p>
+
+            {/* 右側：本次就醫資訊 */}
+            <div className="space-y-4">
+              <h3 className="font-black text-indigo-900 border-b-2 border-indigo-100 pb-2 flex items-center gap-2">
+                <FileText size={18}/> 本次就醫資訊
+              </h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="col-span-2">
+                  <label className="block text-xs font-bold text-gray-600 mb-1">* 就醫序號 (Encounter ID)</label>
+                  <input type="text" value={formData.encounterId} onChange={e=>setFormData({...formData, encounterId: e.target.value})} className="border-2 p-2.5 rounded-lg w-full focus:border-indigo-500 outline-none font-black text-lg" maxLength={12} placeholder="例如: I26020001" />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">* 入院日期</label>
+                  <input type="date" value={formData.adminDate} onChange={e=>setFormData({...formData, adminDate: e.target.value})} className="border-2 p-2 rounded-lg w-full focus:border-indigo-500 outline-none font-bold font-mono" />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">* 報到床號</label>
+                  <input type="text" value={formData.bed} onChange={e=>setFormData({...formData, bed: e.target.value})} className="border-2 p-2 rounded-lg w-full focus:border-indigo-500 outline-none font-bold text-indigo-900" maxLength={8} placeholder="例如: NICU01" />
+                </div>
+              </div>
             </div>
           </div>
-        ))}
+
+          <div className="mt-6 flex justify-end border-t border-gray-100 pt-4">
+            <button onClick={handleSave} className="bg-green-600 text-white px-8 py-3 rounded-xl hover:bg-green-700 font-black shadow-lg hover:shadow-xl transition flex items-center gap-2 text-lg transform hover:-translate-y-0.5">
+              <Save size={20}/> 儲存並建立紀錄
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-x-auto mt-2">
+        <table className="w-full text-left whitespace-nowrap">
+          <thead className="bg-gray-50 text-gray-600 border-b border-gray-200">
+            <tr>
+              <th className="p-4 font-bold text-center">住院狀態</th>
+              <th className="p-4 font-bold">就醫序號</th>
+              <th className="p-4 font-bold">住院日期</th>
+              <th className="p-4 font-bold">病歷號</th>
+              <th className="p-4 font-bold">床號</th>
+              <th className="p-4 font-bold">姓名</th>
+              <th className="p-4 font-bold text-center">性別</th>
+              <th className="p-4 font-bold">出生日期</th>
+              <th className="p-4 font-bold text-center">操作</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {filtered.map(item => {
+              const isEditing = editingAdmId === item.encounterId;
+              
+              return (
+              <tr key={item.encounterId} className="hover:bg-blue-50 transition">
+                <td className="p-4 text-center">
+                  {isEditing ? (
+                    <select
+                      value={editingAdmData.isClosed}
+                      onChange={e => setEditingAdmData({...editingAdmData, isClosed: e.target.value === 'true'})}
+                      className="border-2 p-1.5 rounded-lg w-full text-xs font-bold focus:border-blue-500 outline-none cursor-pointer"
+                    >
+                      <option value={false}>住院中</option>
+                      <option value={true}>已結案</option>
+                    </select>
+                  ) : (
+                    item.isClosed ? <span className="bg-gray-200 text-gray-600 px-3 py-1 text-xs rounded-full font-bold">已結案</span> : <span className="bg-green-100 border border-green-300 text-green-700 px-3 py-1 text-xs rounded-full font-bold shadow-sm">住院中</span>
+                  )}
+                </td>
+                <td className="p-4 font-black text-indigo-900">{item.encounterId}</td>
+                <td className="p-4 font-mono text-gray-600">{item.adminDate}</td>
+                <td className="p-4 font-black text-blue-900 text-lg">{item.mrn}</td>
+                <td className="p-4 font-bold text-blue-700 text-lg">
+                  {isEditing ? (
+                    <input
+                      type="text"
+                      value={editingAdmData.bed}
+                      onChange={e => setEditingAdmData({...editingAdmData, bed: e.target.value})}
+                      className="border-2 p-1.5 rounded-lg w-24 text-sm font-bold focus:border-blue-500 outline-none"
+                      maxLength={8}
+                    />
+                  ) : (
+                    item.bed
+                  )}
+                </td>
+                <td className="p-4 font-bold text-gray-800">{item.patient?.name || '未知'}</td>
+                <td className="p-4 text-center font-bold">{item.patient?.gender || '-'}</td>
+                <td className="p-4 font-mono text-gray-600">{item.patient?.dob || '-'}</td>
+                <td className="p-4 text-center">
+                  <div className="flex items-center justify-center gap-2">
+                    {isEditing ? (
+                      <>
+                        <button onClick={() => saveEdit(item)} className="text-green-700 bg-green-100 p-2 rounded-lg font-bold shadow-sm hover:bg-green-200 transition" title="儲存修改"><Save size={18}/></button>
+                        <button onClick={() => setEditingAdmId(null)} className="text-gray-500 bg-gray-100 p-2 rounded-lg font-bold shadow-sm hover:bg-gray-200 transition" title="取消"><XCircle size={18}/></button>
+                      </>
+                    ) : (
+                      <>
+                        <button onClick={() => startEdit(item)} className="text-gray-500 hover:text-blue-600 p-1.5 rounded-lg hover:bg-blue-100 transition" title="修改床號與狀態"><Edit size={18}/></button>
+                        <button onClick={() => onSelect(item.patient, item)} className="text-white bg-blue-600 px-4 py-1.5 rounded-lg font-bold shadow-sm hover:bg-blue-700 transition transform hover:scale-105">
+                          進入TPN處方 &rarr;
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            )})}
+            {filtered.length === 0 && <tr><td colSpan="9" className="p-10 text-center text-gray-400 font-bold">查無資料，請確認搜尋條件或新增資料。</td></tr>}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -708,8 +829,11 @@ const formatDateTime = (iso) => {
 };
 
 function OrdersView({ db, setDb, apiSync, patient, admission, user, onBack, onEdit, showAlert }) {
+  const [showVoid, setShowVoid] = useState(false);
+
   const encounterOrders = db.orders.filter(o => String(o.encounterId) === String(admission.encounterId));
-  const sortedOrders = [...encounterOrders].sort((a, b) => new Date(b.date) - new Date(a.date));
+  const visibleOrders = showVoid ? encounterOrders : encounterOrders.filter(o => o.status !== 'Void');
+  const sortedOrders = [...visibleOrders].sort((a, b) => new Date(b.date) - new Date(a.date));
 
   return (
     <div className="space-y-4">
@@ -721,9 +845,15 @@ function OrdersView({ db, setDb, apiSync, patient, admission, user, onBack, onEd
             <p className="text-sm font-bold text-gray-500 mt-1">{patient.name} ({patient.mrn}) | 就醫: {admission.encounterId} | 床號: <span className="text-blue-600">{admission.bed}</span></p>
           </div>
         </div>
-        <button onClick={() => ['doctor','np'].includes(user.role) ? onEdit(null) : showAlert('僅醫師或專師可開立新處方')} className="bg-blue-700 text-white px-5 py-2.5 rounded-xl flex items-center gap-2 hover:bg-blue-800 font-bold shadow-lg transition">
-          <FileText size={18} /> 新開處方單
-        </button>
+        <div className="flex items-center gap-4">
+          <label className="flex items-center gap-2 cursor-pointer text-sm font-bold text-gray-500 hover:text-gray-800 transition bg-white px-3 py-2 rounded-xl shadow-sm border border-gray-200">
+            <input type="checkbox" checked={showVoid} onChange={e => setShowVoid(e.target.checked)} className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer" />
+            顯示作廢處方
+          </label>
+          <button onClick={() => ['doctor','np'].includes(user.role) ? onEdit(null) : showAlert('僅醫師或專師可開立新處方')} className="bg-blue-700 text-white px-5 py-2.5 rounded-xl flex items-center gap-2 hover:bg-blue-800 font-bold shadow-lg transition">
+            <FileText size={18} /> 新開處方單
+          </button>
+        </div>
       </div>
       <OrderTable orders={sortedOrders} patientName={patient.name} onEdit={onEdit} />
     </div>
@@ -731,7 +861,10 @@ function OrdersView({ db, setDb, apiSync, patient, admission, user, onBack, onEd
 }
 
 function GlobalOrdersView({ db, user, onEdit }) {
-  const sortedOrders = db.orders.map(o => {
+  const [showVoid, setShowVoid] = useState(false);
+
+  const visibleOrders = showVoid ? db.orders : db.orders.filter(o => o.status !== 'Void');
+  const sortedOrders = visibleOrders.map(o => {
     const admission = db.admissions.find(a => String(a.encounterId) === String(o.encounterId));
     const patient = admission ? db.patients.find(p => String(p.mrn) === String(admission.mrn)) : { name: '未知' };
     return { ...o, patient, admission };
@@ -743,6 +876,10 @@ function GlobalOrdersView({ db, user, onEdit }) {
         <h2 className="text-2xl font-black text-blue-900 flex items-center gap-3">
           <Beaker size={28} /> 全院 TPN 處方調配清單
         </h2>
+        <label className="flex items-center gap-2 cursor-pointer text-sm font-bold text-gray-500 hover:text-gray-800 transition bg-white px-3 py-2 rounded-xl shadow-sm border border-gray-200">
+          <input type="checkbox" checked={showVoid} onChange={e => setShowVoid(e.target.checked)} className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer" />
+          顯示作廢處方
+        </label>
       </div>
       <OrderTable orders={sortedOrders} onEdit={(o) => onEdit(o, o.patient, o.admission)} isGlobal />
     </div>
@@ -791,7 +928,7 @@ function OrderTable({ orders, patientName, onEdit, isGlobal }) {
               <td className="p-4 text-gray-600 font-bold text-xs">{o.authorName}</td>
               <td className="p-4 text-center">
                 <button onClick={() => onEdit(o)} className="text-white bg-indigo-600 px-4 py-1.5 rounded-lg shadow-sm hover:bg-indigo-700 font-bold text-xs transition transform group-hover:scale-105">
-                  檢視/執行
+                  檢視/修改
                 </button>
               </td>
             </tr>
@@ -804,7 +941,7 @@ function OrderTable({ orders, patientName, onEdit, isGlobal }) {
 }
 
 // ==========================================
-// 6. 處方開立/編輯表單核心邏輯 (加入 Step 5 調配計算)
+// 6. 處方開立/編輯表單核心邏輯
 // ==========================================
 function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, onBack, showAlert }) {
   const [formData, setFormData] = useState(() => {
@@ -814,12 +951,14 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
       if (!parsed.startDate) parsed.startDate = getTodayLocal();
       if (!parsed.startTime) parsed.startTime = '17:00';
       if (!parsed.durationDays) parsed.durationDays = 1;
+      if (parsed.lipid === undefined) parsed.lipid = '';
       return parsed;
     }
     return {
       orderId: generateId('TPN'), groupId: generateId('G'), version: 1, status: 'Draft',
       encounterId: admission.encounterId, date: new Date().toISOString(), authorId: user.id, authorName: user.name, parentOrderId: null,
       weight: '', height: '', startDate: getTodayLocal(), startTime: '17:00', durationDays: 1, packageCode: '', prepVol: '', rate: '', calcAdminVol: 0,
+      lipid: '',
       elements: ELEMENTS.reduce((acc, el) => { acc[el.key] = { conc: 0, dose: 0, remark: '' }; return acc; }, {}),
       otherAdditions: { znso4: '', heparin: '', lyo: '', peditrace: '' }
     };
@@ -829,7 +968,6 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
   const [validationErrors, setValidationErrors] = useState({});
   const ageDays = getAgeInDays(patient.dob);
 
-  // --- 計算邏輯區 ---
   useEffect(() => {
     const vol = parseFloat(formData.rate) * 24;
     setFormData(prev => ({ ...prev, calcAdminVol: isNaN(vol) ? 0 : vol }));
@@ -983,12 +1121,10 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
     }
   };
 
-  // --- Step 5 調配計算渲染邏輯 ---
   const renderDispensingSimulation = () => {
     let totalMedsVol = 0;
     const targetVol = parseFloat(formData.prepVol) || 0;
     
-    // 計算每項藥品
     const medRows = db.medications.filter(m => m.isActive).map(med => {
       const vol = evaluateFormula(med.formula, formData);
       const isNum = typeof vol === 'number' && !isNaN(vol);
@@ -1001,7 +1137,6 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
 
     return (
       <div className="bg-white p-6 rounded-2xl shadow-lg border-2 border-indigo-100 mt-6 relative overflow-hidden">
-        {/* 背景裝飾 */}
         <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none"><Beaker size={120} /></div>
         
         <div className="flex justify-between items-end mb-4 border-b-2 border-indigo-100 pb-2 relative z-10">
@@ -1039,7 +1174,6 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                 </tr>
               ))}
               
-              {/* 加水補足與總計列 */}
               <tr className={`${isOverload ? 'bg-red-50' : 'bg-blue-50'} border-t-2 border-indigo-200`}>
                 <td className="p-4 font-black text-blue-900 flex items-center gap-2">
                   <div className="w-3 h-3 rounded-full bg-blue-500 animate-pulse"></div> Sterile Water (WFI) 加水補足
@@ -1062,7 +1196,6 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
           </table>
         </div>
 
-        {/* 超量警告 Banner */}
         {isOverload && (
           <div className="mt-4 bg-red-600 text-white p-4 rounded-xl shadow-lg flex items-center gap-3 animate-bounce">
             <AlertTriangle size={24} />
@@ -1076,10 +1209,8 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
     );
   };
 
-  // --- UI 渲染 ---
   return (
     <div className="max-w-6xl mx-auto space-y-6">
-      {/* 標頭狀態列 */}
       <div className="bg-white p-5 rounded-2xl shadow-sm flex flex-wrap justify-between items-center border-l-8 border-blue-700">
         <div className="flex items-center gap-4">
           <button onClick={onBack} className="p-2 bg-gray-50 border border-gray-200 hover:bg-gray-100 rounded-full transition"><ArrowLeft size={20}/></button>
@@ -1103,7 +1234,6 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-        {/* 左側：Step 1 & 2 */}
         <div className="xl:col-span-4 space-y-6">
           <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 relative">
             <h3 className="text-lg font-black mb-4 flex items-center gap-2 text-blue-900 border-b-2 border-gray-100 pb-2">
@@ -1129,7 +1259,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
 
           <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
             <h3 className="text-lg font-black mb-4 flex items-center gap-2 text-blue-900 border-b-2 border-gray-100 pb-2">
-              <span className="bg-blue-600 text-white w-6 h-6 rounded-full inline-flex justify-center items-center text-sm shadow">2</span> 處方設定
+              <span className="bg-blue-600 text-white w-6 h-6 rounded-full inline-flex justify-center items-center text-sm shadow">2</span> 處方開立
             </h3>
             <div className="space-y-4">
               <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 space-y-3">
@@ -1147,32 +1277,53 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                 </div>
               </div>
 
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-1">標準處方套餐 <span className="text-red-500">*</span></label>
-                <select value={formData.packageCode} onChange={handlePackageChange} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl focus:border-blue-500 outline-none font-bold disabled:bg-gray-100 text-blue-900 bg-gray-50">
-                  <option value="">-- 請選擇 --</option>
-                  {db.packages.map(p => <option key={p.code} value={p.code}>{p.code} - {p.name}</option>)}
-                </select>
-              </div>
-              <div className="flex gap-4">
-                <div className="flex-1">
-                  <label className="block text-sm font-bold text-gray-700 mb-1">調配體積 (mL) <span className="text-red-500">*</span></label>
-                  <input type="number" value={formData.prepVol} onChange={e=>setFormData({...formData, prepVol: e.target.value})} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl focus:border-blue-500 outline-none font-black text-lg text-indigo-700 disabled:bg-gray-100" />
+              <div className="bg-white p-4 rounded-xl border-2 border-indigo-100 shadow-sm space-y-4 relative">
+                <div className="absolute top-0 right-0 bg-indigo-100 text-indigo-800 text-xs font-bold px-3 py-1 rounded-bl-lg rounded-tr-[10px]">主靜脈營養 (Main TPN)</div>
+                
+                <div className="pt-2">
+                  <label className="block text-sm font-bold text-gray-700 mb-1">標準處方套餐 <span className="text-red-500">*</span></label>
+                  <select value={formData.packageCode} onChange={handlePackageChange} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl focus:border-blue-500 outline-none font-bold disabled:bg-gray-100 text-blue-900 bg-gray-50">
+                    <option value="">-- 請選擇 --</option>
+                    {db.packages.map(p => <option key={p.code} value={p.code}>{p.code} - {p.name}</option>)}
+                  </select>
                 </div>
-                <div className="flex-1">
-                  <label className="block text-sm font-bold text-gray-700 mb-1">Rate (mL/hr) <span className="text-red-500">*</span></label>
-                  <input type="number" step="0.1" value={formData.rate} onChange={e=>setFormData({...formData, rate: e.target.value})} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl focus:border-blue-500 outline-none font-black text-lg text-blue-700 disabled:bg-gray-100" />
+                <div className="flex gap-4">
+                  <div className="flex-1">
+                    <label className="block text-sm font-bold text-gray-700 mb-1">調配體積 (mL) <span className="text-red-500">*</span></label>
+                    <input type="number" value={formData.prepVol} onChange={e=>setFormData({...formData, prepVol: e.target.value})} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl focus:border-blue-500 outline-none font-black text-lg text-indigo-700 disabled:bg-gray-100" />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-sm font-bold text-gray-700 mb-1">Rate (mL/hr) <span className="text-red-500">*</span></label>
+                    <input type="number" step="0.1" value={formData.rate} onChange={e=>setFormData({...formData, rate: e.target.value})} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl focus:border-blue-500 outline-none font-black text-lg text-blue-700 disabled:bg-gray-100" />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-sm font-bold text-gray-700 mb-1">給藥體積 (mL/d)</label>
+                    <input type="text" value={formData.calcAdminVol.toFixed(1)} disabled className="w-full border-2 p-3 rounded-xl outline-none font-black text-lg text-green-600 bg-gray-100 border-gray-200 cursor-not-allowed" />
+                  </div>
                 </div>
               </div>
-              <div className="bg-gray-800 text-white p-4 rounded-xl shadow-inner flex justify-between items-center">
-                <span className="font-bold text-gray-300 text-sm">系統計算 給藥體積</span>
-                <span className="text-2xl font-black text-green-400">{formData.calcAdminVol.toFixed(1)} <span className="text-sm font-bold">mL/d</span></span>
+
+              <div className="bg-purple-50 p-4 rounded-xl border border-purple-200 shadow-sm relative">
+                <div className="absolute top-0 right-0 bg-purple-200 text-purple-800 text-xs font-bold px-3 py-1 rounded-bl-lg rounded-tr-[10px]">脂肪乳劑 (Lipid)</div>
+                <div className="pt-2">
+                  <p className="text-[11px] text-purple-600 font-bold leading-tight mb-3">※ 獨立管路輸注，不混入主 TPN 袋中 (每 mL 含 0.2g)</p>
+                  <div className="flex gap-4">
+                    <div className="flex-1">
+                      <label className="block text-sm font-bold text-purple-900 mb-1">Lipid (g/kg)</label>
+                      <input type="number" step="0.1" value={formData.lipid} onChange={e=>setFormData({...formData, lipid: e.target.value})} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl border-purple-200 focus:border-purple-500 outline-none font-black text-lg text-purple-800 disabled:bg-purple-100/50 bg-white" placeholder="0.0" />
+                    </div>
+                    <div className="flex-1">
+                      <label className="block text-sm font-bold text-purple-900 mb-1">輸注速度 (mL/hr)</label>
+                      <input type="text" value={((parseFloat(formData.lipid) || 0) * (parseFloat(formData.weight) || 0) / 0.2 / 24).toFixed(2)} disabled className="w-full border-2 p-3 rounded-xl outline-none font-black text-lg text-purple-600 bg-purple-100/50 border-purple-200 cursor-not-allowed" />
+                    </div>
+                  </div>
+                </div>
               </div>
+
             </div>
           </div>
         </div>
 
-        {/* 右側：Step 3 & 4 */}
         <div className="xl:col-span-8 flex flex-col gap-6">
           <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex-1">
             <div className="flex justify-between items-center mb-6 border-b-2 border-gray-100 pb-2">
@@ -1251,10 +1402,8 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
         </div>
       </div>
 
-      {/* 【新增 Step 5】動態調配計算區塊 (僅限藥師檢視) */}
       {user.role === 'pharmacist' && renderDispensingSimulation()}
 
-      {/* 動作按鈕區 */}
       <div className="bg-gray-900 p-5 rounded-2xl shadow-xl flex justify-between items-center mt-8 border-t-4 border-gray-700 sticky bottom-4 z-50">
         <div>
           {!isReadOnly && formData.orderId && (
