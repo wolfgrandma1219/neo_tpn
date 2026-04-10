@@ -9,14 +9,12 @@ import {
 // === 未來串接 Google Apps Script 的網址請填入此處 ===
 const GAS_URL = "https://script.google.com/macros/s/AKfycby6h1FoAxmLKm6ptfrzNfnSLbAmvyp9bPR8hvMQ3T6GRopF-7MuFMV4fy3jZ3QoO82eIg/exec";
 
-// --- 初始化模擬資料 ---
+// --- 系統預設防呆資料 (防止資料庫完全空白時系統崩潰或無法登入) ---
 const INITIAL_USERS = [
-  { id: 'u1', username: 'admin', password: '123', role: 'admin', name: '系統管理員' },
-  { id: 'u2', username: 'dr', password: '123', role: 'doctor', name: '王醫師' },
-  { id: 'u3', username: 'np', password: '123', role: 'np', name: '李專師' },
-  { id: 'u4', username: 'ph', password: '123', role: 'pharmacist', name: '林藥師' },
+  { id: 'u1', username: 'admin', password: '123', role: 'admin', name: '系統管理員' } // 僅保留管理員，避免空資料庫時無法登入建立其他帳號
 ];
 
+// LIMITS 結構為介面渲染必須，保留作為預設基底
 const INITIAL_LIMITS = {
   kcal: { min: 40, max: 120, unit: 'Kcal/kg' },
   cho: { min: 4, max: 15, unit: 'GIR mg/kg/min' },
@@ -29,24 +27,11 @@ const INITIAL_LIMITS = {
   mg: { min: 0.2, max: 0.5, unit: 'mEq/kg' },
 };
 
+// 套餐因目前沒有 UI 可以新增，保留預設選項
 const INITIAL_PACKAGES = [
   { code: 'P01', name: 'Preterm Standard A', kcal: 400, cho: 100, aa: 25, na: 30, k: 20, cl: 30, ca: 15, p: 10, mg: 5 },
   { code: 'P02', name: 'Term Standard B', kcal: 500, cho: 120, aa: 30, na: 40, k: 25, cl: 40, ca: 20, p: 15, mg: 5 },
   { code: 'C01', name: 'Custom (自訂)', kcal: 0, cho: 0, aa: 0, na: 0, k: 0, cl: 0, ca: 0, p: 0, mg: 0 },
-];
-
-// 初始化藥品調配公式資料
-const INITIAL_MEDICATIONS = [
-  { id: 'm1', name: 'Aminosteril(R) 10%', formula: '[aa] * (V / 1000) / 0.1', unit: 'mL', isActive: true, seq: 1 },
-  { id: 'm2', name: 'Dextrose 50%', formula: '[cho] * (V / 1000) / 0.5', unit: 'mL', isActive: true, seq: 2 },
-  { id: 'm3', name: 'NaCl 20%', formula: '[na] * (V / 1000) / 3.42', unit: 'mL', isActive: true, seq: 3 },
-  { id: 'm4', name: 'KCl 15%', formula: '[k] * (V / 1000) / 2', unit: 'mL', isActive: true, seq: 4 },
-  { id: 'm5', name: 'Calcium Gluconate 10%', formula: '[ca] * (V / 1000) / 0.46', unit: 'mL', isActive: true, seq: 5 },
-  { id: 'm6', name: 'Heparin (純量)', formula: '[heparin]', unit: 'IU', isActive: true, seq: 6 },
-];
-
-const INITIAL_AUDIT_RULES = [
-  { id: 'ar1', condition: '[na] >= [p] * 2', description: '因使用glycophos，鈉處方劑量應大於等於磷的2倍', isActive: true },
 ];
 
 const ELEMENTS = [
@@ -68,10 +53,8 @@ const OTHER_ADDITIONS = [
   { key: 'peditrace', label: 'Peditrace', unit: 'mL' }
 ];
 
-// --- 工具函數 ---
 const generateId = (prefix) => `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
-// 修正：支援傳入 targetDate 進行精準的日齡計算，以避免開啟舊處方時日齡亂跳
 const getAgeInDays = (dob, targetDate) => {
   if (!dob) return 0;
   const endDate = targetDate ? new Date(targetDate) : new Date();
@@ -101,7 +84,6 @@ const cleanTimeString = (timeString) => {
   return str;
 };
 
-// 動態公式安全解析引擎
 const evaluateFormula = (formulaString, formData) => {
   if (!formulaString) return 0;
   try {
@@ -147,7 +129,7 @@ const evaluateCondition = (conditionString, formData) => {
     return !!result;
   } catch (error) {
     console.warn("稽核規則運算錯誤:", conditionString, error);
-    return false; // 若語法錯誤則阻擋，避免風險
+    return false; 
   }
 };
 
@@ -160,8 +142,8 @@ export default function App() {
     users: INITIAL_USERS,
     limits: INITIAL_LIMITS,
     packages: INITIAL_PACKAGES,
-    medications: INITIAL_MEDICATIONS, 
-    auditRules: INITIAL_AUDIT_RULES,
+    medications: [], 
+    auditRules: [],
     patients: [],
     admissions: [],
     orders: []
@@ -201,8 +183,8 @@ export default function App() {
           users: result.data.users?.length > 0 ? result.data.users : INITIAL_USERS,
           limits: safeLimits,
           packages: result.data.packages?.length > 0 ? result.data.packages : INITIAL_PACKAGES,
-          medications: result.data.medications?.length > 0 ? result.data.medications : INITIAL_MEDICATIONS, 
-          auditRules: result.data.auditRules?.length > 0 ? result.data.auditRules : INITIAL_AUDIT_RULES,
+          medications: result.data.medications || [], 
+          auditRules: result.data.auditRules || [],
           patients: normalizedPatients,
           admissions: normalizedAdmissions,
           orders: normalizedOrders
@@ -211,7 +193,7 @@ export default function App() {
         throw new Error(result.error);
       }
     } catch (error) {
-      console.error("連線錯誤:", error);
+      console.warn("連線錯誤，使用預設或快取資料繼續運行。");
       if (showLoading) showAlert(`無法連線至資料庫，使用預設或快取資料。`);
     } finally {
       setIsSyncing(false);
@@ -232,8 +214,8 @@ export default function App() {
       successCallback();
       
     } catch (error) {
-      console.error("API 錯誤:", error);
-      showAlert(`連線存檔失敗: ${error.message} (目前以本地模式繼續)`);
+      console.warn("API 連線錯誤，繼續以本地模式運行。");
+      showAlert(`連線存檔失敗: 進入本地離線模式`);
       successCallback(); 
     } finally {
       setIsSyncing(false);
@@ -241,14 +223,11 @@ export default function App() {
   };
 
   useEffect(() => {
-    // 初始載入
     fetchAllData(true);
-
-    // 設定背景輪詢：每 30 秒自動背景更新一次
+    // 降低輪詢頻率避免開發時頻繁報錯
     const intervalId = setInterval(() => {
       fetchAllData(false);
-    }, 30000);
-
+    }, 60000);
     return () => clearInterval(intervalId);
   }, [fetchAllData]);
 
@@ -265,7 +244,7 @@ export default function App() {
   };
 
   const AlertBanner = () => alertMsg && (
-    <div className="fixed top-4 left-1/2 transform -translate-x-1/2 bg-red-100 border-l-4 border-red-500 text-red-700 px-6 py-3 rounded shadow-xl z-50 flex items-center gap-3">
+    <div className="fixed top-4 left-1/2 transform -translate-x-1/2 bg-red-100 border-l-4 border-red-500 text-red-700 px-6 py-3 rounded shadow-xl z-50 flex items-center gap-3 transition-all duration-300">
       <AlertTriangle size={20} /> <span className="font-bold">{alertMsg}</span>
     </div>
   );
@@ -354,7 +333,6 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
   const [testData, setTestData] = useState({ V: '300', W: '2.5', aa: '35', cho: '100', na: '30' });
   const [testResult, setTestResult] = useState(null);
 
-  // 稽核規則相關 State
   const [newRule, setNewRule] = useState({ condition: '', description: '', isActive: true });
   const [editingRuleId, setEditingRuleId] = useState(null);
   const [editingRuleData, setEditingRuleData] = useState({});
@@ -465,7 +443,7 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
   };
 
   return (
-    <div className="bg-white p-6 rounded-2xl shadow-lg border border-gray-100">
+    <div className="bg-white p-6 rounded-2xl shadow-lg border border-gray-100 animate-in fade-in zoom-in duration-300">
       <h2 className="text-2xl font-black mb-6 flex items-center gap-2 text-gray-800"><Settings /> 系統管理設定</h2>
       
       {/* 區塊 1: 濃度設定 */}
@@ -722,13 +700,11 @@ function CombinedAdmissionsView({ db, apiSync, setDb, showAlert, onSelect }) {
   const [search, setSearch] = useState('');
   const [showForm, setShowForm] = useState(false);
 
-  // 負責處理行內編輯的 State
   const [editingAdmId, setEditingAdmId] = useState(null);
   const [editingAdmData, setEditingAdmData] = useState({ bed: '', isClosed: false });
 
   const getToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
   
-  // 統一的表單 State
   const [formData, setFormData] = useState({
     mrn: '', name: '', dob: '', gender: '男',
     encounterId: '', bed: '', adminDate: getToday(), isClosed: false
@@ -795,7 +771,6 @@ function CombinedAdmissionsView({ db, apiSync, setDb, showAlert, onSelect }) {
     }
   };
 
-  // 處理修改儲存邏輯
   const startEdit = (item) => {
     setEditingAdmId(item.encounterId);
     setEditingAdmData({ bed: item.bed, isClosed: item.isClosed });
@@ -818,7 +793,7 @@ function CombinedAdmissionsView({ db, apiSync, setDb, showAlert, onSelect }) {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-300">
       <div className="flex flex-col md:flex-row justify-between items-center bg-white p-5 rounded-2xl shadow-sm border border-gray-100 gap-4">
         <div className="relative w-full md:w-96">
           <Search className="absolute left-4 top-3 text-gray-400" size={18} />
@@ -834,7 +809,6 @@ function CombinedAdmissionsView({ db, apiSync, setDb, showAlert, onSelect }) {
           <button onClick={() => setShowForm(false)} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><XCircle size={24}/></button>
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-            {/* 左側：病患基本資料 */}
             <div className="space-y-4">
               <h3 className="font-black text-blue-900 border-b-2 border-blue-100 pb-2 flex items-center gap-2">
                 <User size={18}/> 病患基本資料
@@ -848,22 +822,21 @@ function CombinedAdmissionsView({ db, apiSync, setDb, showAlert, onSelect }) {
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-gray-600 mb-1">姓名</label>
-                  <input type="text" value={formData.name} onChange={e=>setFormData({...formData, name: e.target.value})} disabled={isExistingPt} className={`border-2 p-2 rounded-lg w-full outline-none font-bold ${isExistingPt ? 'bg-gray-100 text-gray-500 border-gray-200' : 'focus:border-blue-500'}`} maxLength={6} />
+                  <input type="text" value={formData.name} onChange={e=>setFormData(prev => ({...prev, name: e.target.value}))} disabled={isExistingPt} className={`border-2 p-2 rounded-lg w-full outline-none font-bold ${isExistingPt ? 'bg-gray-100 text-gray-500 border-gray-200' : 'focus:border-blue-500'}`} maxLength={6} />
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-gray-600 mb-1">性別</label>
-                  <select value={formData.gender} onChange={e=>setFormData({...formData, gender: e.target.value})} disabled={isExistingPt} className={`border-2 p-2 rounded-lg w-full outline-none font-bold ${isExistingPt ? 'bg-gray-100 text-gray-500 border-gray-200' : 'focus:border-blue-500'}`}>
+                  <select value={formData.gender} onChange={e=>setFormData(prev => ({...prev, gender: e.target.value}))} disabled={isExistingPt} className={`border-2 p-2 rounded-lg w-full outline-none font-bold ${isExistingPt ? 'bg-gray-100 text-gray-500 border-gray-200' : 'focus:border-blue-500'}`}>
                     <option>男</option><option>女</option>
                   </select>
                 </div>
                 <div className="col-span-2">
                   <label className="block text-xs font-bold text-gray-600 mb-1">生日 (DOB)</label>
-                  <input type="date" value={formData.dob} onChange={e=>setFormData({...formData, dob: e.target.value})} disabled={isExistingPt} className={`border-2 p-2 rounded-lg w-full outline-none font-bold font-mono ${isExistingPt ? 'bg-gray-100 text-gray-500 border-gray-200' : 'focus:border-blue-500'}`} />
+                  <input type="date" value={formData.dob} onChange={e=>setFormData(prev => ({...prev, dob: e.target.value}))} disabled={isExistingPt} className={`border-2 p-2 rounded-lg w-full outline-none font-bold font-mono ${isExistingPt ? 'bg-gray-100 text-gray-500 border-gray-200' : 'focus:border-blue-500'}`} />
                 </div>
               </div>
             </div>
 
-            {/* 右側：本次就醫資訊 */}
             <div className="space-y-4">
               <h3 className="font-black text-indigo-900 border-b-2 border-indigo-100 pb-2 flex items-center gap-2">
                 <FileText size={18}/> 本次就醫資訊
@@ -871,15 +844,15 @@ function CombinedAdmissionsView({ db, apiSync, setDb, showAlert, onSelect }) {
               <div className="grid grid-cols-2 gap-4">
                 <div className="col-span-2">
                   <label className="block text-xs font-bold text-gray-600 mb-1">* 就醫序號 (Encounter ID)</label>
-                  <input type="text" value={formData.encounterId} onChange={e=>setFormData({...formData, encounterId: e.target.value})} className="border-2 p-2.5 rounded-lg w-full focus:border-indigo-500 outline-none font-black text-lg" maxLength={12} placeholder="例如: I26020001" />
+                  <input type="text" value={formData.encounterId} onChange={e=>setFormData(prev => ({...prev, encounterId: e.target.value}))} className="border-2 p-2.5 rounded-lg w-full focus:border-indigo-500 outline-none font-black text-lg" maxLength={12} placeholder="例如: I26020001" />
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-gray-600 mb-1">* 入院日期</label>
-                  <input type="date" value={formData.adminDate} onChange={e=>setFormData({...formData, adminDate: e.target.value})} className="border-2 p-2 rounded-lg w-full focus:border-indigo-500 outline-none font-bold font-mono" />
+                  <input type="date" value={formData.adminDate} onChange={e=>setFormData(prev => ({...prev, adminDate: e.target.value}))} className="border-2 p-2 rounded-lg w-full focus:border-indigo-500 outline-none font-bold font-mono" />
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-gray-600 mb-1">* 報到床號</label>
-                  <input type="text" value={formData.bed} onChange={e=>setFormData({...formData, bed: e.target.value})} className="border-2 p-2 rounded-lg w-full focus:border-indigo-500 outline-none font-bold text-indigo-900" maxLength={8} placeholder="例如: NICU01" />
+                  <input type="text" value={formData.bed} onChange={e=>setFormData(prev => ({...prev, bed: e.target.value}))} className="border-2 p-2 rounded-lg w-full focus:border-indigo-500 outline-none font-bold text-indigo-900" maxLength={8} placeholder="例如: NICU01" />
                 </div>
               </div>
             </div>
@@ -983,19 +956,24 @@ const formatDateTime = (iso) => {
 
 function OrdersView({ db, setDb, apiSync, patient, admission, user, onBack, onEdit, showAlert }) {
   const [showVoid, setShowVoid] = useState(false);
+  const [showDeleted, setShowDeleted] = useState(false);
 
-  const encounterOrders = db.orders.filter(o => String(o.encounterId) === String(admission.encounterId));
-  const visibleOrders = showVoid ? encounterOrders : encounterOrders.filter(o => o.status !== 'Void');
+  const encounterOrders = db.orders.filter(o => String(o.encounterId) === String(admission?.encounterId));
+  const visibleOrders = encounterOrders.filter(o => {
+    if (!showVoid && o.status === 'Void') return false;
+    if (!showDeleted && o.status === 'Deleted') return false;
+    return true;
+  });
   const sortedOrders = [...visibleOrders].sort((a, b) => new Date(b.date) - new Date(a.date));
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 animate-in fade-in zoom-in duration-300">
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
           <button onClick={onBack} className="p-2 bg-white shadow-sm border border-gray-200 hover:bg-gray-100 rounded-full transition"><ArrowLeft size={20}/></button>
           <div>
             <h2 className="text-2xl font-black text-gray-800">TPN 處方紀錄</h2>
-            <p className="text-sm font-bold text-gray-500 mt-1">{patient.name} ({patient.mrn}) | 就醫: {admission.encounterId} | 床號: <span className="text-blue-600">{admission.bed}</span></p>
+            <p className="text-sm font-bold text-gray-500 mt-1">{patient?.name} ({patient?.mrn}) | 就醫: {admission?.encounterId} | 床號: <span className="text-blue-600">{admission?.bed}</span></p>
           </div>
         </div>
         <div className="flex items-center gap-4">
@@ -1003,20 +981,29 @@ function OrdersView({ db, setDb, apiSync, patient, admission, user, onBack, onEd
             <input type="checkbox" checked={showVoid} onChange={e => setShowVoid(e.target.checked)} className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer" />
             顯示作廢處方
           </label>
+          <label className="flex items-center gap-2 cursor-pointer text-sm font-bold text-gray-500 hover:text-gray-800 transition bg-white px-3 py-2 rounded-xl shadow-sm border border-gray-200">
+            <input type="checkbox" checked={showDeleted} onChange={e => setShowDeleted(e.target.checked)} className="w-4 h-4 rounded text-red-600 focus:ring-red-500 cursor-pointer" />
+            顯示刪除處方
+          </label>
           <button onClick={() => ['doctor','np'].includes(user.role) ? onEdit(null) : showAlert('僅醫師或專師可開立新處方')} className="bg-blue-700 text-white px-5 py-2.5 rounded-xl flex items-center gap-2 hover:bg-blue-800 font-bold shadow-lg transition">
             <FileText size={18} /> 新開處方單
           </button>
         </div>
       </div>
-      <OrderTable orders={sortedOrders} patientName={patient.name} onEdit={onEdit} />
+      <OrderTable orders={sortedOrders} patientName={patient?.name} onEdit={onEdit} />
     </div>
   );
 }
 
 function GlobalOrdersView({ db, user, onEdit }) {
   const [showVoid, setShowVoid] = useState(false);
+  const [showDeleted, setShowDeleted] = useState(false);
 
-  const visibleOrders = showVoid ? db.orders : db.orders.filter(o => o.status !== 'Void');
+  const visibleOrders = db.orders.filter(o => {
+    if (!showVoid && o.status === 'Void') return false;
+    if (!showDeleted && o.status === 'Deleted') return false;
+    return true;
+  });
   const sortedOrders = visibleOrders.map(o => {
     const admission = db.admissions.find(a => String(a.encounterId) === String(o.encounterId));
     const patient = admission ? db.patients.find(p => String(p.mrn) === String(admission.mrn)) : { name: '未知' };
@@ -1024,15 +1011,21 @@ function GlobalOrdersView({ db, user, onEdit }) {
   }).sort((a, b) => new Date(b.date) - new Date(a.date));
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-300">
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-2xl font-black text-blue-900 flex items-center gap-3">
           <Beaker size={28} /> 全院 TPN 處方調配清單
         </h2>
-        <label className="flex items-center gap-2 cursor-pointer text-sm font-bold text-gray-500 hover:text-gray-800 transition bg-white px-3 py-2 rounded-xl shadow-sm border border-gray-200">
-          <input type="checkbox" checked={showVoid} onChange={e => setShowVoid(e.target.checked)} className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer" />
-          顯示作廢處方
-        </label>
+        <div className="flex items-center gap-4">
+          <label className="flex items-center gap-2 cursor-pointer text-sm font-bold text-gray-500 hover:text-gray-800 transition bg-white px-3 py-2 rounded-xl shadow-sm border border-gray-200">
+            <input type="checkbox" checked={showVoid} onChange={e => setShowVoid(e.target.checked)} className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer" />
+            顯示作廢處方
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer text-sm font-bold text-gray-500 hover:text-gray-800 transition bg-white px-3 py-2 rounded-xl shadow-sm border border-gray-200">
+            <input type="checkbox" checked={showDeleted} onChange={e => setShowDeleted(e.target.checked)} className="w-4 h-4 rounded text-red-600 focus:ring-red-500 cursor-pointer" />
+            顯示刪除處方
+          </label>
+        </div>
       </div>
       <OrderTable orders={sortedOrders} onEdit={(o) => onEdit(o, o.patient, o.admission)} isGlobal />
     </div>
@@ -1109,7 +1102,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
     }
     return {
       orderId: generateId('TPN'), groupId: generateId('G'), version: 1, status: 'Draft',
-      encounterId: admission.encounterId, date: new Date().toISOString(), authorId: user.id, authorName: user.name, parentOrderId: null,
+      encounterId: admission?.encounterId || '', date: new Date().toISOString(), authorId: user.id, authorName: user.name, parentOrderId: null,
       weight: '', height: '', startDate: getTodayLocal(), startTime: '17:00', durationDays: 1, packageCode: '', prepVol: '', rate: '', calcAdminVol: 0,
       lipid: '',
       elements: ELEMENTS.reduce((acc, el) => { acc[el.key] = { conc: 0, dose: 0, remark: '' }; return acc; }, {}),
@@ -1120,8 +1113,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
   const isReadOnly = formData.status !== 'Draft';
   const [validationErrors, setValidationErrors] = useState({});
   
-  // 這裡修正：呼叫 getAgeInDays 時，傳入處方單設定的開始日期 (startDate)
-  const ageDays = getAgeInDays(patient.dob, formData.startDate);
+  const ageDays = getAgeInDays(patient?.dob, formData.startDate);
 
   useEffect(() => {
     const vol = parseFloat(formData.rate) * 24;
@@ -1196,7 +1188,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
     else { newConc = (newDose * wt) / volL; }
 
     setFormData(prev => {
-      const newElements = { ...prev.elements, [key]: { ...prev.elements[key], dose: newDose, conc: newConc } };
+      const newElements = { ...prev.elements, [key]: { ...prev.elements[key], dose: newDoseStr, conc: newConc } };
       if (key === 'cho' || key === 'aa') {
         const choConc = key === 'cho' ? newConc : prev.elements.cho.conc;
         const aaConc = key === 'aa' ? newConc : prev.elements.aa.conc;
@@ -1220,16 +1212,15 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
     }
     const errors = {};
     ELEMENTS.forEach(el => {
-      const dose = formData.elements[el.key].dose;
+      const dose = Number(formData.elements[el.key].dose);
       const limit = db.limits[el.key];
-      if (limit && (dose < limit.min || dose > limit.max)) {
+      if (limit && (dose < Number(limit.min) || dose > Number(limit.max))) {
         errors[el.key] = `超出範圍 (${limit.min}~${limit.max})`;
       }
     });
     setValidationErrors(errors);
     if (Object.keys(errors).length > 0) { showAlert('部分劑量超出安全範圍，請修正後再提交'); return false; }
     
-    // --- 執行處方自訂稽核規則 ---
     const activeRules = db.auditRules.filter(r => r.isActive);
     for (let rule of activeRules) {
       if (!evaluateCondition(rule.condition, formData)) {
@@ -1375,7 +1366,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
   };
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6">
+    <div className="max-w-6xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
       <div className="bg-white p-5 rounded-2xl shadow-sm flex flex-wrap justify-between items-center border-l-8 border-blue-700">
         <div className="flex items-center gap-4">
           <button onClick={onBack} className="p-2 bg-gray-50 border border-gray-200 hover:bg-gray-100 rounded-full transition"><ArrowLeft size={20}/></button>
@@ -1405,19 +1396,20 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
               <span className="bg-blue-600 text-white w-6 h-6 rounded-full inline-flex justify-center items-center text-sm shadow">1</span> 基本資料
             </h3>
             <div className="grid grid-cols-2 gap-y-4 text-sm bg-gray-50 p-4 rounded-xl border border-gray-200 mb-4">
-              <div className="text-gray-500 font-bold">病歷號</div><div className="font-black text-gray-800 text-right">{patient.mrn}</div>
-              <div className="text-gray-500 font-bold">姓名/性別</div><div className="font-black text-gray-800 text-right">{patient.name} / {patient.gender}</div>
+              <div className="text-gray-500 font-bold">病歷號</div><div className="font-black text-gray-800 text-right">{patient?.mrn}</div>
+              <div className="text-gray-500 font-bold">姓名/性別</div><div className="font-black text-gray-800 text-right">{patient?.name} / {patient?.gender}</div>
               <div className="text-gray-500 font-bold">日齡</div><div className="font-black text-blue-700 text-right">{ageDays} 天</div>
-              <div className="text-gray-500 font-bold">就醫/床號</div><div className="font-black text-gray-800 text-right">{admission.encounterId} / {admission.bed}</div>
+              <div className="text-gray-500 font-bold">就醫/床號</div><div className="font-black text-gray-800 text-right">{admission?.encounterId} / {admission?.bed}</div>
             </div>
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-bold text-gray-700 mb-1">體重 (kg) <span className="text-red-500">*</span></label>
-                <input type="number" step="0.001" value={formData.weight} onChange={e=>setFormData({...formData, weight: e.target.value})} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl focus:border-blue-500 outline-none font-bold text-lg disabled:bg-gray-100" />
+                {/* 套用Functional Update修復 */}
+                <input type="number" step="0.001" value={formData.weight} onChange={e=>setFormData(prev => ({...prev, weight: e.target.value}))} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl focus:border-blue-500 outline-none font-bold text-lg disabled:bg-gray-100" />
               </div>
               <div>
                 <label className="block text-sm font-bold text-gray-700 mb-1">身高 (cm) <span className="text-red-500">*</span></label>
-                <input type="number" step="0.1" value={formData.height} onChange={e=>setFormData({...formData, height: e.target.value})} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl focus:border-blue-500 outline-none font-bold text-lg disabled:bg-gray-100" />
+                <input type="number" step="0.1" value={formData.height} onChange={e=>setFormData(prev => ({...prev, height: e.target.value}))} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl focus:border-blue-500 outline-none font-bold text-lg disabled:bg-gray-100" />
               </div>
             </div>
           </div>
@@ -1431,14 +1423,14 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                 <div>
                   <label className="block text-xs font-bold text-blue-800 mb-1">處方開始時間 <span className="text-red-500">*</span></label>
                   <div className="flex gap-2">
-                    <input type="date" value={formData.startDate} onChange={e=>setFormData({...formData, startDate: e.target.value})} disabled={isReadOnly} className="w-full border-2 border-blue-200 p-2 rounded-lg font-bold disabled:bg-transparent" />
-                    <input type="text" maxLength="5" placeholder="HH:mm" value={formData.startTime} onChange={e => { let val = e.target.value.replace(/[^\d:]/g, ''); if (val.length === 2 && !val.includes(':') && formData.startTime.length < val.length) val += ':'; setFormData({...formData, startTime: val}); }} disabled={isReadOnly} className="w-20 shrink-0 border-2 border-blue-200 p-2 rounded-lg font-bold text-center disabled:bg-transparent" />
+                    <input type="date" value={formData.startDate} onChange={e=>setFormData(prev => ({...prev, startDate: e.target.value}))} disabled={isReadOnly} className="w-full border-2 border-blue-200 p-2 rounded-lg font-bold disabled:bg-transparent" />
+                    <input type="text" maxLength="5" placeholder="HH:mm" value={formData.startTime} onChange={e => { let val = e.target.value.replace(/[^\d:]/g, ''); if (val.length === 2 && !val.includes(':') && formData.startTime.length < val.length) val += ':'; setFormData(prev => ({...prev, startTime: val})); }} disabled={isReadOnly} className="w-20 shrink-0 border-2 border-blue-200 p-2 rounded-lg font-bold text-center disabled:bg-transparent" />
                   </div>
                 </div>
                 <div className="flex gap-4 items-center">
                   <span className="text-xs font-bold text-blue-800">天數 <span className="text-red-500">*</span></span>
-                  <label className="flex items-center gap-1 cursor-pointer font-bold"><input type="checkbox" checked={formData.durationDays===1} onChange={()=>setFormData({...formData, durationDays: 1})} disabled={isReadOnly} className="w-4 h-4 rounded text-blue-600"/> 1 天</label>
-                  <label className="flex items-center gap-1 cursor-pointer font-bold"><input type="checkbox" checked={formData.durationDays===2} onChange={()=>setFormData({...formData, durationDays: 2})} disabled={isReadOnly} className="w-4 h-4 rounded text-blue-600"/> 2 天</label>
+                  <label className="flex items-center gap-1 cursor-pointer font-bold"><input type="checkbox" checked={formData.durationDays===1} onChange={()=>setFormData(prev => ({...prev, durationDays: 1}))} disabled={isReadOnly} className="w-4 h-4 rounded text-blue-600"/> 1 天</label>
+                  <label className="flex items-center gap-1 cursor-pointer font-bold"><input type="checkbox" checked={formData.durationDays===2} onChange={()=>setFormData(prev => ({...prev, durationDays: 2}))} disabled={isReadOnly} className="w-4 h-4 rounded text-blue-600"/> 2 天</label>
                 </div>
               </div>
 
@@ -1455,11 +1447,11 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                 <div className="flex gap-4">
                   <div className="flex-1">
                     <label className="block text-sm font-bold text-gray-700 mb-1">調配體積 (mL) <span className="text-red-500">*</span></label>
-                    <input type="number" value={formData.prepVol} onChange={e=>setFormData({...formData, prepVol: e.target.value})} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl focus:border-blue-500 outline-none font-black text-lg text-indigo-700 disabled:bg-gray-100" />
+                    <input type="number" value={formData.prepVol} onChange={e=>setFormData(prev => ({...prev, prepVol: e.target.value}))} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl focus:border-blue-500 outline-none font-black text-lg text-indigo-700 disabled:bg-gray-100" />
                   </div>
                   <div className="flex-1">
                     <label className="block text-sm font-bold text-gray-700 mb-1">Rate (mL/hr) <span className="text-red-500">*</span></label>
-                    <input type="number" step="0.1" value={formData.rate} onChange={e=>setFormData({...formData, rate: e.target.value})} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl focus:border-blue-500 outline-none font-black text-lg text-blue-700 disabled:bg-gray-100" />
+                    <input type="number" step="0.1" value={formData.rate} onChange={e=>setFormData(prev => ({...prev, rate: e.target.value}))} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl focus:border-blue-500 outline-none font-black text-lg text-blue-700 disabled:bg-gray-100" />
                   </div>
                   <div className="flex-1">
                     <label className="block text-sm font-bold text-gray-700 mb-1">給藥體積 (mL/d)</label>
@@ -1475,7 +1467,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                   <div className="flex gap-4">
                     <div className="flex-1">
                       <label className="block text-sm font-bold text-purple-900 mb-1">Lipid (g/kg)</label>
-                      <input type="number" step="0.1" value={formData.lipid} onChange={e=>setFormData({...formData, lipid: e.target.value})} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl border-purple-200 focus:border-purple-500 outline-none font-black text-lg text-purple-800 disabled:bg-purple-100/50 bg-white" placeholder="0.0" />
+                      <input type="number" step="0.1" value={formData.lipid} onChange={e=>setFormData(prev => ({...prev, lipid: e.target.value}))} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl border-purple-200 focus:border-purple-500 outline-none font-black text-lg text-purple-800 disabled:bg-purple-100/50 bg-white" placeholder="0.0" />
                     </div>
                     <div className="flex-1">
                       <label className="block text-sm font-bold text-purple-900 mb-1">輸注速度 (mL/hr)</label>
@@ -1522,7 +1514,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                           <div className="flex items-center justify-end gap-2">
                             <input 
                               type="number" step="0.1" 
-                              value={data.dose === 0 ? '' : Number(data.dose).toFixed(1).replace(/\.?0+$/, '')} 
+                              value={data.dose === 0 ? '' : (typeof data.dose === 'number' ? Number(data.dose).toFixed(1).replace(/\.?0+$/, '') : data.dose)} 
                               onChange={(e) => handleDoseChange(el.key, e.target.value)}
                               disabled={isReadOnly || el.key === 'kcal'}
                               className={`w-20 text-right p-2 border-2 rounded-lg font-black text-lg focus:outline-none transition-colors
@@ -1556,7 +1548,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                   <div key={item.key} className="bg-gray-50 p-4 rounded-xl border border-gray-200 flex flex-col justify-center">
                     <label className="block text-sm font-bold text-gray-600 mb-2">{item.label}</label>
                     <div className="flex items-center gap-2 border-b-2 border-gray-300 pb-1 focus-within:border-blue-500 transition-colors">
-                      <input type="number" step="0.1" value={val !== '' ? Number(val).toString() : ''} onChange={e => setFormData(p => ({...p, otherAdditions: { ...p.otherAdditions, [item.key]: e.target.value }}))} disabled={isReadOnly} className="w-full bg-transparent focus:outline-none text-right font-black text-lg disabled:text-blue-900" placeholder="0" />
+                      <input type="number" step="0.1" value={val} onChange={e => setFormData(p => ({...p, otherAdditions: { ...p.otherAdditions, [item.key]: e.target.value }}))} disabled={isReadOnly} className="w-full bg-transparent focus:outline-none text-right font-black text-lg disabled:text-blue-900" placeholder="0" />
                       <span className="text-xs font-bold text-gray-400 w-6">{item.unit}</span>
                     </div>
                   </div>
@@ -1571,7 +1563,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
 
       <div className="bg-gray-900 p-5 rounded-2xl shadow-xl flex justify-between items-center mt-8 border-t-4 border-gray-700 sticky bottom-4 z-50">
         <div>
-          {!isReadOnly && formData.orderId && (
+          {!isReadOnly && formData.orderId && !formData.parentOrderId && (
             <button onClick={handleDelete} className="text-gray-400 hover:text-red-400 flex items-center gap-2 text-sm font-bold px-4 py-2 rounded hover:bg-gray-800 transition">
               <Trash2 size={18}/> 刪除草稿
             </button>
@@ -1580,9 +1572,11 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
         <div className="flex gap-4">
           {!isReadOnly && (
             <>
-              <button onClick={() => saveOrder('Draft')} className="bg-gray-700 text-white px-6 py-3 rounded-xl font-bold hover:bg-gray-600 transition shadow">
-                儲存暫存
-              </button>
+              {!formData.parentOrderId && (
+                <button onClick={() => saveOrder('Draft')} className="bg-gray-700 text-white px-6 py-3 rounded-xl font-bold hover:bg-gray-600 transition shadow">
+                  儲存暫存
+                </button>
+              )}
               {['doctor', 'np'].includes(user.role) && (
                 <button onClick={() => saveOrder('Submitted')} className="bg-blue-600 text-white px-8 py-3 rounded-xl font-black hover:bg-blue-500 transition shadow-lg flex items-center gap-2 text-lg">
                   <CheckCircle size={20}/> 醫師完成送出
