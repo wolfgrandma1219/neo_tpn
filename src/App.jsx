@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 
 // === 未來串接 Google Apps Script 的網址請填入此處 ===
-const GAS_URL = "https://script.google.com/macros/s/AKfycby6h1FoAxmLKm6ptfrzNfnSLbAmvyp9bPR8hvMQ3T6GRopF-7MuFMV4fy3jZ3QoO82eIg/exec";
+const GAS_URL = "https://script.google.com/macros/s/AKfycbw9_vt0R-rAUt8sAjSlquSUMk7l98Nf5ZcQnuDeXUNDjbQOfKrsTowpEsnnUSfZzvFu/exec";
 
 // --- 系統預設防呆資料 (防止資料庫完全空白時系統崩潰或無法登入) ---
 const INITIAL_USERS = [
@@ -171,6 +171,7 @@ export default function App() {
       if (result.success) {
         const fetchedLimits = result.data.limits || {};
         const safeLimits = Object.keys(fetchedLimits).length > 0 ? { ...INITIAL_LIMITS, ...fetchedLimits } : INITIAL_LIMITS;
+        
         const normalizedPatients = (result.data.patients || []).map(p => ({ ...p, dob: cleanDateString(p.dob) }));
         const normalizedAdmissions = (result.data.admissions || []).map(a => ({ ...a, adminDate: cleanDateString(a.adminDate), dischargeDate: cleanDateString(a.dischargeDate) }));
         const normalizedOrders = (result.data.orders || []).map(o => ({ 
@@ -179,12 +180,42 @@ export default function App() {
           startTime: cleanTimeString(o.startTime)
         }));
 
+        // --- 修正點 1: 強化藥品清單解析 (處理大小寫與字串布林值，過濾空行) ---
+        const rawMedications = result.data.medications || result.data.Medications || [];
+        const normalizedMedications = rawMedications.filter(m => m.id || m.ID).map(m => {
+          const rawIsActive = m.isActive !== undefined ? m.isActive : m.IsActive;
+          return {
+            ...m,
+            id: m.id || m.ID,
+            name: m.name || m.Name || '',
+            formula: m.formula || m.Formula || '',
+            unit: m.unit || m.Unit || 'mL',
+            seq: Number(m.seq || m.Seq || 0),
+            isActive: rawIsActive === undefined ? true : (rawIsActive === true || String(rawIsActive).toLowerCase() === 'true')
+          };
+        });
+
+        // --- 修正點 2: 強化稽核規則解析 (處理大小寫與字串布林值，過濾空行) ---
+        const rawAuditRules = result.data.auditRules || result.data.AuditRules || [];
+        const normalizedAuditRules = rawAuditRules.filter(r => r.id || r.ID).map(r => {
+          // 擷取布林值欄位，相容大小寫
+          const rawIsActive = r.isActive !== undefined ? r.isActive : r.IsActive;
+          return {
+            ...r, // 保留可能有的其他欄位
+            id: r.id || r.ID,
+            condition: r.condition || r.Condition || '',
+            description: r.description || r.Description || '',
+            // 強制轉換字串 "TRUE"/"FALSE" 為真正 JavaScript 的 Boolean
+            isActive: rawIsActive === undefined ? true : (rawIsActive === true || String(rawIsActive).toLowerCase() === 'true')
+          };
+        });
+
         setDb({
           users: result.data.users?.length > 0 ? result.data.users : INITIAL_USERS,
           limits: safeLimits,
           packages: result.data.packages?.length > 0 ? result.data.packages : INITIAL_PACKAGES,
-          medications: result.data.medications || [], 
-          auditRules: result.data.auditRules || [],
+          medications: normalizedMedications, 
+          auditRules: normalizedAuditRules, // 寫入修正後的資料
           patients: normalizedPatients,
           admissions: normalizedAdmissions,
           orders: normalizedOrders
