@@ -180,7 +180,6 @@ export default function App() {
           startTime: cleanTimeString(o.startTime)
         }));
 
-        // --- 修正點 1: 強化藥品清單解析 (處理大小寫與字串布林值，過濾空行) ---
         const rawMedications = result.data.medications || result.data.Medications || [];
         const normalizedMedications = rawMedications.filter(m => m.id || m.ID).map(m => {
           const rawIsActive = m.isActive !== undefined ? m.isActive : m.IsActive;
@@ -195,17 +194,14 @@ export default function App() {
           };
         });
 
-        // --- 修正點 2: 強化稽核規則解析 (處理大小寫與字串布林值，過濾空行) ---
         const rawAuditRules = result.data.auditRules || result.data.AuditRules || [];
         const normalizedAuditRules = rawAuditRules.filter(r => r.id || r.ID).map(r => {
-          // 擷取布林值欄位，相容大小寫
           const rawIsActive = r.isActive !== undefined ? r.isActive : r.IsActive;
           return {
-            ...r, // 保留可能有的其他欄位
+            ...r, 
             id: r.id || r.ID,
             condition: r.condition || r.Condition || '',
             description: r.description || r.Description || '',
-            // 強制轉換字串 "TRUE"/"FALSE" 為真正 JavaScript 的 Boolean
             isActive: rawIsActive === undefined ? true : (rawIsActive === true || String(rawIsActive).toLowerCase() === 'true')
           };
         });
@@ -215,7 +211,7 @@ export default function App() {
           limits: safeLimits,
           packages: result.data.packages?.length > 0 ? result.data.packages : INITIAL_PACKAGES,
           medications: normalizedMedications, 
-          auditRules: normalizedAuditRules, // 寫入修正後的資料
+          auditRules: normalizedAuditRules,
           patients: normalizedPatients,
           admissions: normalizedAdmissions,
           orders: normalizedOrders
@@ -255,7 +251,6 @@ export default function App() {
 
   useEffect(() => {
     fetchAllData(true);
-    // 降低輪詢頻率避免開發時頻繁報錯
     const intervalId = setInterval(() => {
       fetchAllData(false);
     }, 60000);
@@ -1129,6 +1124,8 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
       if (!parsed.startTime) parsed.startTime = '17:00';
       if (!parsed.durationDays) parsed.durationDays = 1;
       if (parsed.lipid === undefined) parsed.lipid = '';
+      if (parsed.useGlycophos === undefined) parsed.useGlycophos = true;
+      if (parsed.useSodiumAcetate === undefined) parsed.useSodiumAcetate = false;
       return parsed;
     }
     return {
@@ -1136,6 +1133,8 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
       encounterId: admission?.encounterId || '', date: new Date().toISOString(), authorId: user.id, authorName: user.name, parentOrderId: null,
       weight: '', height: '', startDate: getTodayLocal(), startTime: '17:00', durationDays: 1, packageCode: '', prepVol: '', rate: '', calcAdminVol: 0,
       lipid: '',
+      useGlycophos: true, // 新增：預設勾選
+      useSodiumAcetate: false, // 新增：預設不勾選
       elements: ELEMENTS.reduce((acc, el) => { acc[el.key] = { conc: 0, dose: 0, remark: '' }; return acc; }, {}),
       otherAdditions: { znso4: '', heparin: '', lyo: '', peditrace: '' }
     };
@@ -1151,6 +1150,71 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
     setFormData(prev => ({ ...prev, calcAdminVol: isNaN(vol) ? 0 : vol }));
   }, [formData.rate]);
 
+  // --- 新增：專門處理 Cl (氯) 邏輯的自動計算引擎 ---
+  useEffect(() => {
+    if (isReadOnly) return;
+
+    const pDose = Number(formData.elements.p?.dose) || 0;
+    const naDose = Number(formData.elements.na?.dose) || 0;
+    const kDose = Number(formData.elements.k?.dose) || 0;
+
+    // 步驟 1: 計算 Extra Na
+    const extraNa = Math.max(0, naDose - (formData.useGlycophos ? pDose * 2 : 0));
+    
+    // 步驟 2: 計算 Cl 總量與對應備註
+    let clDose = 0;
+    let remark = "";
+
+    if (extraNa > 0.0001) {
+      if (formData.useSodiumAcetate) {
+        clDose = kDose; // 額外的 Na 來自 Acetate，不帶入 Cl
+        remark = "自動計算 (僅含 KCl，額外鈉來自 Acetate)";
+      } else {
+        clDose = kDose + extraNa; // 額外的 Na 來自 3% NaCl，1:1 帶入 Cl
+        remark = "自動計算 (KCl + 3% NaCl)";
+      }
+    } else {
+      clDose = kDose;
+      remark = "自動計算 (僅含 KCl)";
+    }
+
+    // 更新 Cl 的處方濃度 (Conc)
+    const wt = parseFloat(formData.weight) || 0;
+    const volL = (formData.calcAdminVol || 0) / 1000;
+    let clConc = 0;
+    if (wt > 0 && volL > 0) {
+      clConc = (clDose * wt) / volL;
+    }
+
+    // 為了防止無限 Re-render，先比對數值是否真的有改變
+    setFormData(prev => {
+      if (
+        Math.abs(Number(prev.elements.cl.dose) - clDose) < 0.0001 &&
+        prev.elements.cl.remark === remark
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        elements: {
+          ...prev.elements,
+          cl: { ...prev.elements.cl, dose: clDose, conc: clConc, remark: remark }
+        }
+      };
+    });
+
+  }, [
+    formData.elements.p?.dose,
+    formData.elements.na?.dose,
+    formData.elements.k?.dose,
+    formData.useGlycophos,
+    formData.useSodiumAcetate,
+    formData.weight,
+    formData.calcAdminVol,
+    isReadOnly
+  ]);
+  // ------------------------------------------------
+
   useEffect(() => {
     if (!isReadOnly && formData.weight && formData.calcAdminVol) {
       setFormData(prev => {
@@ -1160,6 +1224,8 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
         let hasChanges = false;
 
         ELEMENTS.forEach(el => {
+          if (el.key === 'cl') return; // Cl 由上面的專屬 useEffect 負責，這裡跳過
+
           const concVal = prev.elements[el.key].conc;
           let doseVal = 0;
           if (el.isGIR) { doseVal = ((concVal * volL) / wt) * (1000 / 1440); } 
@@ -1202,7 +1268,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
   };
 
   const handleDoseChange = (key, newDoseStr) => {
-    if (key === 'kcal') return;
+    if (key === 'kcal' || key === 'cl') return; // 防呆：熱量與氯均鎖定不允許手動修改
     const newDose = parseFloat(newDoseStr);
     const wt = parseFloat(formData.weight);
     const volL = formData.calcAdminVol / 1000;
@@ -1227,9 +1293,43 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
         const newKcalDose = (newKcalConc * volL) / wt;
         newElements.kcal = { ...newElements.kcal, conc: newKcalConc, dose: newKcalDose };
       }
+
+      // --- 新增：1. P 與 Na 的單向地板連動 (當調高 P 時) ---
+      if (key === 'p' && prev.useGlycophos) {
+        const pDoseNum = parseFloat(newDoseStr) || 0;
+        const minNa = pDoseNum * 2;
+        const currentNa = parseFloat(prev.elements.na.dose) || 0;
+        
+        if (currentNa < minNa) {
+          const naWt = parseFloat(prev.weight) || 0;
+          const naVolL = (prev.calcAdminVol || 0) / 1000;
+          let naConc = 0;
+          if (naWt > 0 && naVolL > 0) {
+            naConc = (minNa * naWt) / naVolL;
+          }
+          newElements.na = { ...prev.elements.na, dose: minNa.toString(), conc: naConc };
+        }
+      }
+      // ----------------------------------------------------
+
       return { ...prev, packageCode: 'C01', elements: newElements };
     });
   };
+
+  // --- 新增：2. 處理離開欄位 (onBlur) 的 Na 地板強制彈回與警告 ---
+  const handleDoseBlur = (key) => {
+    if (key === 'na' && formData.useGlycophos) {
+      const currentNa = parseFloat(formData.elements.na.dose) || 0;
+      const currentP = parseFloat(formData.elements.p.dose) || 0;
+      const minNa = currentP * 2;
+      
+      if (currentNa < minNa) {
+        showAlert(`因使用 Glycophos，Na 劑量不可低於 P 的兩倍 (最低 ${minNa} mEq/kg)`);
+        handleDoseChange('na', minNa.toString()); // 強制彈回 P*2
+      }
+    }
+  };
+  // ---------------------------------------------------------------
 
   const validateOrder = () => {
     if (!formData.weight || !formData.height || !formData.rate || !formData.packageCode || !formData.startDate || !formData.startTime || !formData.prepVol) {
@@ -1435,7 +1535,6 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-bold text-gray-700 mb-1">體重 (kg) <span className="text-red-500">*</span></label>
-                {/* 套用Functional Update修復 */}
                 <input type="number" step="0.001" value={formData.weight} onChange={e=>setFormData(prev => ({...prev, weight: e.target.value}))} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl focus:border-blue-500 outline-none font-bold text-lg disabled:bg-gray-100" />
               </div>
               <div>
@@ -1514,10 +1613,47 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
 
         <div className="xl:col-span-8 flex flex-col gap-6">
           <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex-1">
-            <div className="flex justify-between items-center mb-6 border-b-2 border-gray-100 pb-2">
-              <h3 className="text-lg font-black flex items-center gap-2 text-blue-900">
+            <div className="flex flex-col lg:flex-row justify-between lg:items-center mb-6 border-b-2 border-gray-100 pb-2 gap-4">
+              <h3 className="text-lg font-black flex items-center gap-2 text-blue-900 shrink-0">
                 <span className="bg-blue-600 text-white w-6 h-6 rounded-full inline-flex justify-center items-center text-sm shadow">3</span> 成分與劑量調整
               </h3>
+              
+              {/* --- 新增：勾選框邏輯 --- */}
+              <div className="flex flex-wrap gap-3">
+                <label className={`flex items-center gap-2 cursor-pointer text-xs font-bold px-3 py-1.5 rounded-lg border transition ${formData.useGlycophos ? 'bg-blue-50 text-blue-800 border-blue-200' : 'bg-gray-50 text-gray-500 border-gray-200'}`}>
+                  <input type="checkbox" checked={formData.useGlycophos} onChange={e => {
+                    const checked = e.target.checked;
+                    setFormData(p => {
+                      const newState = {...p, useGlycophos: checked};
+                      // 防漏設計：當重新勾選 Glycophos 時，立刻檢查並連動 Na
+                      if (checked) {
+                        const currentP = parseFloat(p.elements.p.dose) || 0;
+                        const minNa = currentP * 2;
+                        const currentNa = parseFloat(p.elements.na.dose) || 0;
+                        if (currentNa < minNa) {
+                          const naWt = parseFloat(p.weight) || 0;
+                          const naVolL = (p.calcAdminVol || 0) / 1000;
+                          let naConc = 0;
+                          if (naWt > 0 && naVolL > 0) naConc = (minNa * naWt) / naVolL;
+                          newState.elements = {
+                            ...p.elements,
+                            na: { ...p.elements.na, dose: minNa.toString(), conc: naConc }
+                          };
+                          showAlert(`勾選 Glycophos，Na 劑量已自動提升為 P 的兩倍 (最低 ${minNa} mEq/kg)`);
+                        }
+                      }
+                      return newState;
+                    });
+                  }} disabled={isReadOnly} className="w-4 h-4 rounded text-blue-600 cursor-pointer" />
+                  使用 Glycophos
+                </label>
+                <label className={`flex items-center gap-2 cursor-pointer text-xs font-bold px-3 py-1.5 rounded-lg border transition ${formData.useSodiumAcetate ? 'bg-blue-50 text-blue-800 border-blue-200' : 'bg-gray-50 text-gray-500 border-gray-200'}`}>
+                  <input type="checkbox" checked={formData.useSodiumAcetate} onChange={e => setFormData(p => ({...p, useSodiumAcetate: e.target.checked}))} disabled={isReadOnly} className="w-4 h-4 rounded text-blue-600 cursor-pointer" />
+                  額外補鈉用 Sodium Acetate (不增Cl)
+                </label>
+              </div>
+              {/* ------------------------- */}
+
             </div>
             
             <div className="overflow-x-auto rounded-xl border border-gray-200">
@@ -1534,23 +1670,32 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                   {ELEMENTS.map(el => {
                     const data = formData.elements[el.key];
                     const hasError = validationErrors[el.key];
+                    const isCl = el.key === 'cl'; // 識別是否為氯
+                    const isDisabled = isReadOnly || el.key === 'kcal' || isCl; // 鎖定 kcal 與 cl
+                    
                     return (
                       <tr key={el.key} className={hasError ? 'bg-red-50/50' : 'hover:bg-gray-50'}>
-                        <td className="p-3 font-bold text-gray-700 align-middle">{el.label}</td>
+                        <td className="p-3 font-bold text-gray-700 align-middle">
+                          {el.label} 
+                          {isCl && <span className="ml-1 text-[10px] bg-gray-200 text-gray-500 px-1 rounded">Auto</span>}
+                        </td>
                         <td className="p-3 text-right align-middle">
-                          <span className="font-mono font-bold text-gray-800 text-lg mr-1">{Number(data.conc).toFixed(1)}</span>
+                          <span className={`font-mono font-bold text-lg mr-1 ${isCl ? 'text-gray-400' : 'text-gray-800'}`}>
+                            {Number(data.conc).toFixed(1)}
+                          </span>
                           <span className="text-xs text-gray-400">{el.unit1}</span>
                         </td>
-                        <td className="p-3 text-right bg-yellow-50/30 border-x border-yellow-100 align-middle relative">
+                        <td className={`p-3 text-right border-x align-middle relative ${isCl ? 'bg-gray-50 border-gray-100' : 'bg-yellow-50/30 border-yellow-100'}`}>
                           <div className="flex items-center justify-end gap-2">
                             <input 
                               type="number" step="0.1" 
                               value={data.dose === 0 ? '' : (typeof data.dose === 'number' ? Number(data.dose).toFixed(1).replace(/\.?0+$/, '') : data.dose)} 
                               onChange={(e) => handleDoseChange(el.key, e.target.value)}
-                              disabled={isReadOnly || el.key === 'kcal'}
+                              onBlur={() => handleDoseBlur(el.key)}
+                              disabled={isDisabled}
                               className={`w-20 text-right p-2 border-2 rounded-lg font-black text-lg focus:outline-none transition-colors
                                 ${hasError ? 'border-red-400 focus:border-red-600 bg-red-50 text-red-700' : 
-                                 'border-yellow-300 focus:border-yellow-600 bg-white text-gray-800'} 
+                                 (isCl ? 'bg-gray-100 text-gray-500 border-gray-200 cursor-not-allowed' : 'border-yellow-300 focus:border-yellow-600 bg-white text-gray-800')} 
                                 disabled:bg-transparent disabled:border-transparent ${el.key === 'kcal' ? 'text-blue-800' : ''}`}
                             />
                             <span className="text-xs font-bold text-gray-500 w-16 text-left">{el.unit2}</span>
@@ -1558,7 +1703,15 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                           {hasError && <div className="text-[10px] text-red-600 font-black absolute right-20 bottom-0 translate-y-full pt-1">{hasError}</div>}
                         </td>
                         <td className="p-3 align-middle">
-                          <input type="text" value={data.remark} onChange={e => setFormData(p => ({...p, elements: {...p.elements, [el.key]: {...p.elements[el.key], remark: e.target.value}}}))} disabled={isReadOnly} className="w-full p-2 border border-gray-200 rounded-lg text-xs disabled:bg-transparent disabled:border-transparent focus:border-blue-400 outline-none" placeholder={isReadOnly ? '' : "備註"} />
+                          <input 
+                            type="text" 
+                            value={data.remark} 
+                            onChange={e => setFormData(p => ({...p, elements: {...p.elements, [el.key]: {...p.elements[el.key], remark: e.target.value}}}))} 
+                            disabled={isReadOnly || isCl} // Cl 的備註也鎖定唯讀
+                            className={`w-full p-2 border border-gray-200 rounded-lg text-xs outline-none focus:border-blue-400
+                              ${isCl ? 'bg-gray-50 text-blue-700 font-bold border-transparent' : 'disabled:bg-transparent disabled:border-transparent'}`} 
+                            placeholder={isReadOnly ? '' : (isCl ? '' : "備註")} 
+                          />
                         </td>
                       </tr>
                     );
