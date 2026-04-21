@@ -697,6 +697,7 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
 // ==========================================
 function CombinedAdmissionsView({ db, apiSync, setDb, showAlert, onSelect }) {
   const [search, setSearch] = useState('');
+  const [showClosed, setShowClosed] = useState(false); // 新增：控制是否顯示結案病人
   const [showForm, setShowForm] = useState(false);
 
   const [editingAdmId, setEditingAdmId] = useState(null);
@@ -716,12 +717,17 @@ function CombinedAdmissionsView({ db, apiSync, setDb, showAlert, onSelect }) {
     return { ...adm, patient: pt };
   }).sort((a, b) => new Date(b.adminDate) - new Date(a.adminDate));
 
-  const filtered = combinedList.filter(item => 
-    (item.mrn != null && String(item.mrn).includes(search)) || 
-    (item.patient.name != null && String(item.patient.name).includes(search)) ||
-    (item.encounterId != null && String(item.encounterId).includes(search)) ||
-    (item.bed != null && String(item.bed).includes(search))
-  );
+  const filtered = combinedList.filter(item => {
+    // 新增：如果未勾選顯示結案，且該項目為已結案，則過濾掉
+    if (!showClosed && item.isClosed) return false;
+    
+    return (
+      (item.mrn != null && String(item.mrn).includes(search)) || 
+      (item.patient.name != null && String(item.patient.name).includes(search)) ||
+      (item.encounterId != null && String(item.encounterId).includes(search)) ||
+      (item.bed != null && String(item.bed).includes(search))
+    );
+  });
 
   const handleMrnChange = (e) => {
     const val = e.target.value;
@@ -794,11 +800,19 @@ function CombinedAdmissionsView({ db, apiSync, setDb, showAlert, onSelect }) {
   return (
     <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-300">
       <div className="flex flex-col md:flex-row justify-between items-center bg-white p-5 rounded-2xl shadow-sm border border-gray-100 gap-4">
-        <div className="relative w-full md:w-96">
-          <Search className="absolute left-4 top-3 text-gray-400" size={18} />
-          <input type="text" placeholder="搜尋病歷號、姓名、就醫序號或床號..." value={search} onChange={e=>setSearch(e.target.value)} className="pl-12 pr-4 py-2.5 border-2 rounded-xl w-full focus:border-blue-500 outline-none font-bold text-gray-800" />
+        {/* 新增：將搜尋框與 Checkbox 組合在一起 */}
+        <div className="flex flex-col md:flex-row items-center gap-4 w-full md:w-auto">
+          <div className="relative w-full md:w-96">
+            <Search className="absolute left-4 top-3 text-gray-400" size={18} />
+            <input type="text" placeholder="搜尋病歷號、姓名、就醫序號或床號..." value={search} onChange={e=>setSearch(e.target.value)} className="pl-12 pr-4 py-2.5 border-2 rounded-xl w-full focus:border-blue-500 outline-none font-bold text-gray-800" />
+          </div>
+          <label className="flex items-center gap-2 cursor-pointer text-sm font-bold text-gray-500 hover:text-gray-800 transition bg-gray-50 px-3 py-2.5 rounded-xl border border-gray-200 w-full md:w-auto justify-center">
+            <input type="checkbox" checked={showClosed} onChange={e => setShowClosed(e.target.checked)} className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer" />
+            顯示結案病人
+          </label>
         </div>
-        <button onClick={() => setShowForm(true)} className="w-full md:w-auto bg-blue-700 text-white px-6 py-2.5 rounded-xl flex items-center justify-center gap-2 hover:bg-blue-800 font-bold shadow-md transition">
+        
+        <button onClick={() => setShowForm(true)} className="w-full md:w-auto bg-blue-700 text-white px-6 py-2.5 rounded-xl flex items-center justify-center gap-2 hover:bg-blue-800 font-bold shadow-md transition shrink-0">
           <Plus size={18} /> 新增就醫序號
         </button>
       </div>
