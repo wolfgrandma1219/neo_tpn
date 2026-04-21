@@ -356,8 +356,6 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'doctor', name: '' });
   const [localLimits, setLocalLimits] = useState(db.limits);
   const [newMed, setNewMed] = useState({ name: '', formula: '', unit: 'mL', seq: db.medications.length + 1 });
-  const [testData, setTestData] = useState({ V: '300', W: '2.5', aa: '35', cho: '100', na: '30' });
-  const [testResult, setTestResult] = useState(null);
 
   const [newRule, setNewRule] = useState({ condition: '', description: '', isActive: true });
   const [editingRuleId, setEditingRuleId] = useState(null);
@@ -414,18 +412,6 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
         setDb(p => ({...p, medications: p.medications.filter(m => String(m.id) !== String(id))}));
       });
     }
-  };
-
-  const runTest = () => {
-    if (!newMed.formula) return setTestResult('請先輸入公式');
-    const mockFormData = {
-      prepVol: testData.V, weight: testData.W,
-      elements: ELEMENTS.reduce((acc, el) => { acc[el.key] = { conc: testData[el.key] || 0 }; return acc; }, {}),
-      otherAdditions: {}
-    };
-    const res = evaluateFormula(newMed.formula, mockFormData);
-    if (res === null) setTestResult('❌ 語法錯誤解析失敗');
-    else setTestResult(`✅ 計算結果: ${res} ${newMed.unit}`);
   };
 
   const handleAddRule = () => {
@@ -534,20 +520,7 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
               <label className="block text-xs font-bold text-gray-600 mb-1">單位</label>
               <input type="text" value={newMed.unit} onChange={e=>setNewMed({...newMed, unit: e.target.value})} className="border-2 p-2 rounded-lg w-20 text-center focus:border-indigo-500 outline-none" />
             </div>
-          </div>
-          
-          <div className="bg-indigo-50 p-3 rounded-lg flex items-center gap-3 border border-indigo-100 flex-wrap">
-            <span className="text-sm font-bold text-indigo-800">公式測試器 &rarr;</span>
-            <div className="flex gap-2 items-center text-xs font-mono">
-              V=<input type="text" value={testData.V} onChange={e=>setTestData({...testData, V: e.target.value})} className="w-12 p-1 rounded border text-center"/>
-              W=<input type="text" value={testData.W} onChange={e=>setTestData({...testData, W: e.target.value})} className="w-12 p-1 rounded border text-center"/>
-              [aa]=<input type="text" value={testData.aa} onChange={e=>setTestData({...testData, aa: e.target.value})} className="w-12 p-1 rounded border text-center"/>
-              [cho]=<input type="text" value={testData.cho} onChange={e=>setTestData({...testData, cho: e.target.value})} className="w-12 p-1 rounded border text-center"/>
-              [na]=<input type="text" value={testData.na} onChange={e=>setTestData({...testData, na: e.target.value})} className="w-12 p-1 rounded border text-center"/>
-            </div>
-            <button onClick={runTest} className="bg-white text-indigo-600 border border-indigo-300 px-3 py-1 rounded hover:bg-indigo-100 font-bold text-sm ml-auto">執行測試</button>
-            {testResult && <span className="text-sm font-bold bg-white px-3 py-1 rounded border border-indigo-200 text-indigo-900">{testResult}</span>}
-            <button onClick={handleAddMedication} className="bg-indigo-600 text-white px-5 py-2 rounded-lg hover:bg-indigo-700 font-bold shadow transition ml-4">
+            <button onClick={handleAddMedication} className="bg-indigo-600 text-white px-5 py-2.5 rounded-lg hover:bg-indigo-700 font-bold shadow transition shrink-0">
               <Plus size={18} className="inline mr-1"/> 新增藥品
             </button>
           </div>
@@ -1159,7 +1132,8 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
     const kDose = Number(formData.elements.k?.dose) || 0;
 
     // 步驟 1: 計算 Extra Na
-    const extraNa = Math.max(0, naDose - (formData.useGlycophos ? pDose * 2 : 0));
+    const pBase = Number((pDose * 2).toFixed(1));
+    const extraNa = Math.max(0, naDose - (formData.useGlycophos ? pBase : 0));
     
     // 步驟 2: 計算 Cl 總量與對應備註
     let clDose = 0;
@@ -1177,6 +1151,8 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
       clDose = kDose;
       remark = "自動計算 (僅含 KCl)";
     }
+
+    clDose = Number(clDose.toFixed(1));
 
     // 更新 Cl 的處方濃度 (Conc)
     const wt = parseFloat(formData.weight) || 0;
@@ -1297,7 +1273,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
       // --- 新增：1. P 與 Na 的單向地板連動 (當調高 P 時) ---
       if (key === 'p' && prev.useGlycophos) {
         const pDoseNum = parseFloat(newDoseStr) || 0;
-        const minNa = pDoseNum * 2;
+        const minNa = Number((pDoseNum * 2).toFixed(1));
         const currentNa = parseFloat(prev.elements.na.dose) || 0;
         
         if (currentNa < minNa) {
@@ -1321,10 +1297,10 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
     if (key === 'na' && formData.useGlycophos) {
       const currentNa = parseFloat(formData.elements.na.dose) || 0;
       const currentP = parseFloat(formData.elements.p.dose) || 0;
-      const minNa = currentP * 2;
+      const minNa = Number((currentP * 2).toFixed(1));
       
       if (currentNa < minNa) {
-        showAlert(`因使用 Glycophos，Na 劑量不可低於 P 的兩倍 (最低 ${minNa} mEq/kg)`);
+        showAlert(`因使用 Glycophos，Na 劑量不可低於 P 的兩倍 (最低 ${minNa.toFixed(1)} mEq/kg)`);
         handleDoseChange('na', minNa.toString()); // 強制彈回 P*2
       }
     }
@@ -1628,7 +1604,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                       // 防漏設計：當重新勾選 Glycophos 時，立刻檢查並連動 Na
                       if (checked) {
                         const currentP = parseFloat(p.elements.p.dose) || 0;
-                        const minNa = currentP * 2;
+                        const minNa = Number((currentP * 2).toFixed(1));
                         const currentNa = parseFloat(p.elements.na.dose) || 0;
                         if (currentNa < minNa) {
                           const naWt = parseFloat(p.weight) || 0;
@@ -1639,7 +1615,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                             ...p.elements,
                             na: { ...p.elements.na, dose: minNa.toString(), conc: naConc }
                           };
-                          showAlert(`勾選 Glycophos，Na 劑量已自動提升為 P 的兩倍 (最低 ${minNa} mEq/kg)`);
+                          showAlert(`勾選 Glycophos，Na 劑量已自動提升為 P 的兩倍 (最低 ${minNa.toFixed(1)} mEq/kg)`);
                         }
                       }
                       return newState;
