@@ -1108,7 +1108,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
       const parsed = JSON.parse(JSON.stringify(order));
       if (!parsed.otherAdditions) parsed.otherAdditions = { znso4: '', heparin: '', lyo: '', peditrace: '' };
       if (!parsed.startDate) parsed.startDate = getTodayLocal();
-      if (!parsed.startTime) parsed.startTime = '17:00';
+      if (!parsed.startTime) parsed.startTime = '14:00';
       if (!parsed.durationDays) parsed.durationDays = 1;
       if (parsed.lipid === undefined) parsed.lipid = '';
       if (parsed.useGlycophos === undefined) parsed.useGlycophos = true;
@@ -1118,7 +1118,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
     return {
       orderId: generateId('TPN'), groupId: generateId('G'), version: 1, status: 'Draft',
       encounterId: admission?.encounterId || '', date: new Date().toISOString(), authorId: user.id, authorName: user.name, parentOrderId: null,
-      weight: '', height: '', startDate: getTodayLocal(), startTime: '17:00', durationDays: 1, packageCode: '', prepVol: '', rate: '', calcAdminVol: 0,
+      weight: '', height: '', startDate: getTodayLocal(), startTime: '14:00', durationDays: 1, packageCode: '', prepVol: '', rate: '', calcAdminVol: 0,
       lipid: '',
       useGlycophos: true, // 新增：預設勾選
       useSodiumAcetate: false, // 新增：預設不勾選
@@ -1580,22 +1580,28 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                 </div>
               </div>
 
+              {/* === 修改區塊：脂肪乳劑 (Lipid) === */}
               <div className="bg-purple-50 p-4 rounded-xl border border-purple-200 shadow-sm relative">
-                <div className="absolute top-0 right-0 bg-purple-200 text-purple-800 text-xs font-bold px-3 py-1 rounded-bl-lg rounded-tr-[10px]">脂肪乳劑 (Lipid)</div>
+                <div className="absolute top-0 right-0 bg-purple-200 text-purple-800 text-xs font-bold px-3 py-1 rounded-bl-lg rounded-tr-[10px]">脂肪乳劑 (Lipid) 0.2g/mL</div>
                 <div className="pt-2">
-                  <p className="text-[11px] text-purple-600 font-bold leading-tight mb-3">※ 獨立管路輸注，不混入主 TPN 袋中 (每 mL 含 0.2g)</p>
+                  <p className="text-[11px] text-purple-600 font-bold leading-tight mb-3">※ 獨立管路輸注 20 小時，不混入主 TPN 袋中</p>
                   <div className="flex gap-4">
                     <div className="flex-1">
-                      <label className="block text-sm font-bold text-purple-900 mb-1">Lipid (g/kg)</label>
+                      <label className="block text-sm font-bold text-purple-900 mb-1">日劑量 (mL)</label>
                       <input type="number" step="0.1" value={formData.lipid} onChange={e=>setFormData(prev => ({...prev, lipid: e.target.value}))} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl border-purple-200 focus:border-purple-500 outline-none font-black text-lg text-purple-800 disabled:bg-purple-100/50 bg-white" placeholder="0.0" />
                     </div>
                     <div className="flex-1">
-                      <label className="block text-sm font-bold text-purple-900 mb-1">輸注速度 (mL/hr)</label>
-                      <input type="text" value={((parseFloat(formData.lipid) || 0) * (parseFloat(formData.weight) || 0) / 0.2 / 24).toFixed(2)} disabled className="w-full border-2 p-3 rounded-xl outline-none font-black text-lg text-purple-600 bg-purple-100/50 border-purple-200 cursor-not-allowed" />
+                      <label className="block text-sm font-bold text-purple-900 mb-1">Lipid (g/kg)</label>
+                      <input type="text" value={parseFloat(formData.weight) > 0 ? ((parseFloat(formData.lipid) || 0) * 0.2 / parseFloat(formData.weight)).toFixed(1) : "0.0"} disabled className="w-full border-2 p-3 rounded-xl outline-none font-black text-lg text-purple-600 bg-purple-100/50 border-purple-200 cursor-not-allowed" />
+                    </div>
+                    <div className="flex-1">
+                      <label className="block text-sm font-bold text-purple-900 mb-1">日熱量 (Kcal)</label>
+                      <input type="text" value={((parseFloat(formData.lipid) || 0) * 2).toFixed(1).replace(/\.0$/, '')} disabled className="w-full border-2 p-3 rounded-xl outline-none font-black text-lg text-purple-600 bg-purple-100/50 border-purple-200 cursor-not-allowed" />
                     </div>
                   </div>
                 </div>
               </div>
+              {/* ================================= */}
 
             </div>
           </div>
