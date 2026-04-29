@@ -47,7 +47,7 @@ const ELEMENTS = [
 ];
 
 const OTHER_ADDITIONS = [
-  { key: 'znso4', label: 'ZnSO4', unit: 'mL' },
+  { key: 'znso4', label: 'ZnSO4 (1.35mg/mL)', unit: 'mL' },
   { key: 'heparin', label: 'Heparin', unit: 'IU' },
   { key: 'lyo', label: 'Lyo-povigent', unit: 'mL' },
   { key: 'peditrace', label: 'Peditrace', unit: 'mL' }
@@ -1717,6 +1717,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
             </div>
           </div>
 
+          {/* === 修改區塊：4. 其他添加 (Additions) === */}
           <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
             <h3 className="text-lg font-black mb-4 flex items-center gap-2 text-blue-900 border-b-2 border-gray-100 pb-2">
               <span className="bg-blue-600 text-white w-6 h-6 rounded-full inline-flex justify-center items-center text-sm shadow">4</span> 其他添加 (Additions)
@@ -1724,18 +1725,70 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {OTHER_ADDITIONS.map(item => {
                 const val = formData.otherAdditions[item.key];
+                const wt = parseFloat(formData.weight) || 0;
+                const doseVal = parseFloat(val) || 0;
+                let calcDisplay = null;
+
+                // 根據項目與體重計算每公斤劑量
+                if (item.key === 'znso4' && wt > 0 && doseVal > 0) {
+                  const mcgPerKg = (doseVal * 1.35 * 1000) / wt;
+                  calcDisplay = `${mcgPerKg.toFixed(1)} mcg/kg`;
+                } else if (item.key === 'peditrace' && wt > 0 && doseVal > 0) {
+                  const mlPerKg = doseVal / wt;
+                  calcDisplay = `${mlPerKg.toFixed(2)} mL/kg`;
+                }
+
                 return (
-                  <div key={item.key} className="bg-gray-50 p-4 rounded-xl border border-gray-200 flex flex-col justify-center">
-                    <label className="block text-sm font-bold text-gray-600 mb-2">{item.label}</label>
-                    <div className="flex items-center gap-2 border-b-2 border-gray-300 pb-1 focus-within:border-blue-500 transition-colors">
-                      <input type="number" step="0.1" value={val} onChange={e => setFormData(p => ({...p, otherAdditions: { ...p.otherAdditions, [item.key]: e.target.value }}))} disabled={isReadOnly} className="w-full bg-transparent focus:outline-none text-right font-black text-lg disabled:text-blue-900" placeholder="0" />
-                      <span className="text-xs font-bold text-gray-400 w-6">{item.unit}</span>
+                  <div key={item.key} className="bg-gray-50 p-4 rounded-xl border border-gray-200 flex flex-col justify-between h-full">
+                    <div>
+                      <label 
+                        className="block text-sm font-bold text-gray-600 mb-2 whitespace-nowrap overflow-hidden text-ellipsis" 
+                        title={item.label}
+                      >
+                        {item.label}
+                      </label>
+                      <div className="flex items-center gap-2 border-b-2 border-gray-300 pb-1 focus-within:border-blue-500 transition-colors">
+                        <input 
+                          type="number" 
+                          step={item.key === 'heparin' ? "1" : "0.1"} 
+                          value={val} 
+                          onChange={e => {
+                            let valStr = e.target.value;
+                            // 強制鎖定輸入位數 (防呆設計)
+                            if (valStr.includes('.')) {
+                              const parts = valStr.split('.');
+                              if (item.key === 'heparin') {
+                                valStr = parts[0]; // Heparin 僅限整數
+                              } else {
+                                valStr = parts[0] + '.' + parts[1].substring(0, 1); // 其他限制小數點後 1 位
+                              }
+                            }
+                            setFormData(p => ({...p, otherAdditions: { ...p.otherAdditions, [item.key]: valStr }}));
+                          }} 
+                          disabled={isReadOnly} 
+                          className="w-full bg-transparent focus:outline-none text-right font-black text-lg disabled:text-blue-900" 
+                          placeholder="0" 
+                        />
+                        <span className="text-xs font-bold text-gray-400 w-6">{item.unit}</span>
+                      </div>
+                    </div>
+                    {/* 劑量計算結果顯示區 */}
+                    <div className="mt-2 h-5 text-right">
+                      {calcDisplay ? (
+                        <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded border border-blue-100 shadow-sm">
+                          {calcDisplay}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-gray-300">-</span>
+                      )}
                     </div>
                   </div>
                 );
               })}
             </div>
           </div>
+          {/* ======================================= */}
+          
         </div>
       </div>
 
