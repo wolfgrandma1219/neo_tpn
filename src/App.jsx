@@ -1237,7 +1237,8 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
       const newState = { ...prev, packageCode: newPkgCode };
       if (newPkgCode && newPkgCode !== 'C01') {
         const pkg = db.packages.find(p => String(p.code) === String(newPkgCode));
-        if(!pkg) return newState;
+        if(!pkg) return newState; // 當選到 -modified 的項目，跳過重設元素直接返回
+        
         const newElements = { ...prev.elements };
         const volL = prev.calcAdminVol ? prev.calcAdminVol / 1000 : 0;
         const wt = prev.weight ? parseFloat(prev.weight) : 0;
@@ -1284,7 +1285,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
         newElements.kcal = { ...newElements.kcal, conc: newKcalConc, dose: newKcalDose };
       }
 
-      // --- 新增：1. P 與 Na 的單向地板連動 (當調高 P 時) ---
+      // --- P 與 Na 的單向地板連動 (當調高 P 時) ---
       if (key === 'p' && prev.useGlycophos) {
         const pDoseNum = parseFloat(newDoseStr) || 0;
         const minNa = Number((pDoseNum * 2).toFixed(1));
@@ -1300,13 +1301,20 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
           newElements.na = { ...prev.elements.na, dose: minNa.toString(), conc: naConc };
         }
       }
-      // ----------------------------------------------------
 
-      return { ...prev, packageCode: 'C01', elements: newElements };
+      // --- 判斷並寫入 -modified ---
+      let newPackageCode = prev.packageCode;
+      if (newPackageCode && newPackageCode !== 'C01' && !newPackageCode.endsWith('-modified')) {
+        newPackageCode = `${newPackageCode}-modified`;
+      } else if (!newPackageCode) {
+        newPackageCode = 'C01';
+      }
+
+      return { ...prev, packageCode: newPackageCode, elements: newElements };
     });
   };
 
-  // --- 新增：2. 處理離開欄位 (onBlur) 的 Na 地板強制彈回與警告 ---
+  // --- 2. 處理離開欄位 (onBlur) 的 Na 地板強制彈回與警告 ---
   const handleDoseBlur = (key) => {
     if (key === 'na' && formData.useGlycophos) {
       const currentNa = parseFloat(formData.elements.na.dose) || 0;
@@ -1562,6 +1570,10 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                   <select value={formData.packageCode} onChange={handlePackageChange} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl focus:border-blue-500 outline-none font-bold disabled:bg-gray-100 text-blue-900 bg-gray-50">
                     <option value="">-- 請選擇 --</option>
                     {db.packages.map(p => <option key={p.code} value={p.code}>{p.code} - {p.name}</option>)}
+                    {/* 新增動態選項，如果 packageCode 為手動 modified 的狀態且不在清單內，長出此選項供顯示 */}
+                    {formData.packageCode && !db.packages.find(p => String(p.code) === String(formData.packageCode)) && (
+                      <option value={formData.packageCode}>{formData.packageCode}</option>
+                    )}
                   </select>
                 </div>
                 <div className="flex gap-4">
@@ -1580,7 +1592,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                 </div>
               </div>
 
-              {/* === 修改區塊：脂肪乳劑 (Lipid) === */}
+              {/* === 脂肪乳劑 (Lipid) === */}
               <div className="bg-purple-50 p-4 rounded-xl border border-purple-200 shadow-sm relative">
                 <div className="absolute top-0 right-0 bg-purple-200 text-purple-800 text-xs font-bold px-3 py-1 rounded-bl-lg rounded-tr-[10px]">脂肪乳劑 (Lipid) 0.2g/mL</div>
                 <div className="pt-2">
@@ -1614,7 +1626,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                 <span className="bg-blue-600 text-white w-6 h-6 rounded-full inline-flex justify-center items-center text-sm shadow">3</span> 成分與劑量調整
               </h3>
               
-              {/* --- 新增：勾選框邏輯 --- */}
+              {/* --- 勾選框邏輯 --- */}
               <div className="flex flex-wrap gap-3">
                 <label className={`flex items-center gap-2 cursor-pointer text-xs font-bold px-3 py-1.5 rounded-lg border transition ${formData.useGlycophos ? 'bg-blue-50 text-blue-800 border-blue-200' : 'bg-gray-50 text-gray-500 border-gray-200'}`}>
                   <input type="checkbox" checked={formData.useGlycophos} onChange={e => {
@@ -1635,6 +1647,14 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                             ...p.elements,
                             na: { ...p.elements.na, dose: minNa.toString(), conc: naConc }
                           };
+                          
+                          // 同步套用 -modified
+                          if (newState.packageCode && newState.packageCode !== 'C01' && !newState.packageCode.endsWith('-modified')) {
+                            newState.packageCode = `${newState.packageCode}-modified`;
+                          } else if (!newState.packageCode) {
+                            newState.packageCode = 'C01';
+                          }
+
                           showAlert(`勾選 Glycophos，Na 劑量已自動提升為 P 的兩倍 (最低 ${minNa.toFixed(1)} mEq/kg)`);
                         }
                       }
@@ -1669,11 +1689,29 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                     const isCl = el.key === 'cl'; // 識別是否為氯
                     const isDisabled = isReadOnly || el.key === 'kcal' || isCl; // 鎖定 kcal 與 cl
                     
+                    // --- 新增：動態判斷是否被手動修改過 ---
+                    let isModified = false;
+                    if (formData.packageCode) {
+                      const basePkgCode = formData.packageCode.replace('-modified', '');
+                      const basePkg = db.packages.find(p => String(p.code) === String(basePkgCode));
+                      // 如果有選標準處方，且該項目不是純自訂(C01)，也不是系統鎖死的 Cl 和 Kcal
+                      if (basePkg && basePkgCode !== 'C01' && !isCl && el.key !== 'kcal') {
+                        const originalConc = basePkg[el.key] || 0;
+                        // 比較目前的處方濃度是否與原始標準處方濃度不同 (容許浮點數誤差)
+                        if (Math.abs(Number(data.conc) - Number(originalConc)) > 0.1) {
+                          isModified = true;
+                        }
+                      }
+                    }
+                    // -------------------------------------
+                    
                     return (
                       <tr key={el.key} className={hasError ? 'bg-red-50/50' : 'hover:bg-gray-50'}>
                         <td className="p-3 font-bold text-gray-700 align-middle">
                           {el.label} 
                           {isCl && <span className="ml-1 text-[10px] bg-gray-200 text-gray-500 px-1 rounded">Auto</span>}
+                          {/* 新增：有調整的紅色小標籤 */}
+                          {isModified && <span className="ml-1 text-[10px] bg-red-100 border border-red-200 text-red-600 px-1.5 py-0.5 rounded font-black shadow-sm">有調整</span>}
                         </td>
                         <td className="p-3 text-right align-middle">
                           <span className={`font-mono font-bold text-lg mr-1 ${isCl ? 'text-gray-400' : 'text-gray-800'}`}>
@@ -1717,7 +1755,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
             </div>
           </div>
 
-          {/* === 修改區塊：4. 其他添加 (Additions) === */}
+          {/* === 4. 其他添加 (Additions) === */}
           <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
             <h3 className="text-lg font-black mb-4 flex items-center gap-2 text-blue-900 border-b-2 border-gray-100 pb-2">
               <span className="bg-blue-600 text-white w-6 h-6 rounded-full inline-flex justify-center items-center text-sm shadow">4</span> 其他添加 (Additions)
