@@ -1064,8 +1064,11 @@ function OrderTable({ orders, patientName, onEdit, isGlobal }) {
             <th className="p-4 font-bold">姓名</th>
             <th className="p-4 font-bold">開立時間</th>
             <th className="p-4 font-bold">開始執行</th>
-            <th className="p-4 font-bold text-right">給藥體積</th>
+            {/* 新增: 判斷是否為全院清單以替換為調配體積 */}
+            <th className="p-4 font-bold text-right">{isGlobal ? '調配體積' : '給藥體積'}</th>
             <th className="p-4 font-bold">開立者</th>
+            {/* 新增: 調配藥師欄位 */}
+            <th className="p-4 font-bold">調配藥師</th>
             <th className="p-4 font-bold text-center">操作</th>
           </tr>
         </thead>
@@ -1083,16 +1086,21 @@ function OrderTable({ orders, patientName, onEdit, isGlobal }) {
               <td className="p-4 font-bold text-gray-800">{isGlobal ? o.patient?.name : patientName}</td>
               <td className="p-4 text-gray-500 text-xs font-mono">{formatDateTime(o.date)}</td>
               <td className="p-4 text-gray-800 font-bold font-mono">{o.startDate} <span className="text-xs">{o.startTime}</span></td>
-              <td className="p-4 text-right font-black text-blue-900">{Number(o.calcAdminVol).toFixed(0)} <span className="text-xs font-normal text-gray-500">mL</span></td>
+              <td className="p-4 text-right font-black text-blue-900">
+                {/* 新增: 判斷是否為全院清單以顯示對應體積數值 */}
+                {Number(isGlobal ? o.prepVol : o.calcAdminVol).toFixed(0)} <span className="text-xs font-normal text-gray-500">mL</span>
+              </td>
               <td className="p-4 text-gray-600 font-bold text-xs">{o.authorName}</td>
+              <td className="p-4 text-gray-600 font-bold text-xs">{o.dispenserName || '-'}</td>
               <td className="p-4 text-center">
                 <button onClick={() => onEdit(o)} className="text-white bg-indigo-600 px-4 py-1.5 rounded-lg shadow-sm hover:bg-indigo-700 font-bold text-xs transition transform group-hover:scale-105">
-                  檢視/修改
+                  {/* 新增: 如果是全院清單，顯示 覆核/調配，否則維持 檢視/修改 */}
+                  {isGlobal ? '覆核/調配' : '檢視/修改'}
                 </button>
               </td>
             </tr>
           ))}
-          {orders.length === 0 && <tr><td colSpan="8" className="p-10 text-center text-gray-400 font-bold text-lg">尚無紀錄</td></tr>}
+          {orders.length === 0 && <tr><td colSpan="9" className="p-10 text-center text-gray-400 font-bold text-lg">尚無紀錄</td></tr>}
         </tbody>
       </table>
     </div>
@@ -1123,7 +1131,8 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
       useGlycophos: true, // 新增：預設勾選
       useSodiumAcetate: false, // 新增：預設不勾選
       elements: ELEMENTS.reduce((acc, el) => { acc[el.key] = { conc: 0, dose: 0, remark: '' }; return acc; }, {}),
-      otherAdditions: { znso4: '', heparin: '', lyo: '', peditrace: '' }
+      otherAdditions: { znso4: '', heparin: '', lyo: '', peditrace: '' },
+      dispenserId: '', dispenserName: '' // 預留欄位供寫入
     };
   });
 
@@ -1364,6 +1373,12 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
   const saveOrder = (newStatus) => {
     if (newStatus === 'Submitted' && !validateOrder()) return;
     let finalOrder = { ...formData, status: newStatus, date: new Date().toISOString() };
+
+    // === 新增：如果由藥師確認調配，寫入調配藥師資訊 ===
+    if (newStatus === 'Dispensed' && user.role === 'pharmacist') {
+      finalOrder.dispenserId = user.id;
+      finalOrder.dispenserName = user.name;
+    }
 
     const saveNewOrder = () => {
       apiSync('saveRecord', 'orders', 'orderId', finalOrder, () => {
