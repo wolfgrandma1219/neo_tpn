@@ -137,7 +137,7 @@ const evaluateFormula = (formulaString, formData) => {
 
     const result = new Function('return ' + mathStr)();
     if (isNaN(result) || !isFinite(result)) return 0;
-    return result < 0 ? 0 : Number(result.toFixed(1));
+    return result < 0 ? 0 : Number(result.toFixed(2));
 
   } catch (error) {
     console.warn("公式運算錯誤:", formulaString, error);
@@ -1506,7 +1506,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                   <td className="p-3 font-mono text-xs text-gray-400">{row.formula}</td>
                   <td className="p-3 text-right">
                     <span className={`font-black text-lg ${row.calculatedVol > 0 ? 'text-indigo-800' : 'text-gray-300'}`}>
-                      {row.calculatedVol}
+                      {typeof row.calculatedVol === 'number' ? row.calculatedVol.toFixed(2) : row.calculatedVol}
                     </span>
                     <span className="text-xs text-gray-500 ml-1">{row.unit}</span>
                   </td>
@@ -1521,11 +1521,11 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                 <td className="p-4 text-right">
                   {isOverload ? (
                     <span className="text-red-600 font-black text-xl bg-red-100 px-3 py-1 rounded border border-red-300 shadow-inner">
-                      不足 {-wfiVol.toFixed(1)} mL !
+                      不足 {-wfiVol.toFixed(2)} mL !
                     </span>
                   ) : (
                     <>
-                      <span className="font-black text-2xl text-blue-700">{wfiVol.toFixed(1)}</span>
+                      <span className="font-black text-2xl text-blue-700">{wfiVol.toFixed(2)}</span>
                       <span className="text-xs text-blue-500 ml-1 font-bold">mL</span>
                     </>
                   )}
@@ -1540,7 +1540,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
             <AlertTriangle size={24} />
             <div>
               <div className="font-black text-lg">嚴重警告：處方藥品總體積已超過目標調配體積！</div>
-              <div className="text-sm font-medium opacity-90">目前藥液總和為 {totalMedsVol.toFixed(1)} mL，但目標調配體積僅設定為 {targetVol} mL，請增加調配體積或降低處方濃度。</div>
+              <div className="text-sm font-medium opacity-90">目前藥液總和為 {totalMedsVol.toFixed(2)} mL，但目標調配體積僅設定為 {targetVol} mL，請增加調配體積或降低處方濃度。</div>
             </div>
           </div>
         )}
