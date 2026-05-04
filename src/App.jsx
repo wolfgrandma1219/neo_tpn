@@ -55,6 +55,35 @@ const OTHER_ADDITIONS = [
 
 const generateId = (prefix) => `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
+// --- 新增：自訂處方單號生成邏輯 (TPN-就醫序號-日期-流水號) ---
+const generateOrderId = (encounterId, orders) => {
+  const encId = encounterId || 'UNKNOWN';
+  const d = new Date();
+  // 產生 YYYYMMDD 格式的日期字串
+  const dateStr = `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+  const prefix = `TPN-${encId}-${dateStr}-`;
+  
+  let maxSeq = 0;
+  if (orders && Array.isArray(orders)) {
+    orders.forEach(o => {
+      // 如果存在相同前綴的處方，解析最後的流水號
+      if (o.orderId && String(o.orderId).startsWith(prefix)) {
+        const parts = String(o.orderId).split('-');
+        const seqStr = parts[parts.length - 1]; 
+        const seq = parseInt(seqStr, 10);
+        if (!isNaN(seq) && seq > maxSeq) {
+          maxSeq = seq;
+        }
+      }
+    });
+  }
+  
+  // 流水號加 1，並補齊雙碼
+  const nextSeq = String(maxSeq + 1).padStart(2, '0');
+  return `${prefix}${nextSeq}`;
+};
+// -------------------------------------------------------------
+
 const getAgeInDays = (dob, targetDate) => {
   if (!dob) return 0;
   const endDate = targetDate ? new Date(targetDate) : new Date();
@@ -1124,7 +1153,11 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
       return parsed;
     }
     return {
-      orderId: generateId('TPN'), groupId: generateId('G'), version: 1, status: 'Draft',
+      // ✅ 修改點：使用自訂的 generateOrderId 取代原本的 generateId('TPN')
+      orderId: generateOrderId(admission?.encounterId, db.orders), 
+      groupId: generateId('G'), 
+      version: 1, 
+      status: 'Draft',
       encounterId: admission?.encounterId || '', date: new Date().toISOString(), authorId: user.id, authorName: user.name, parentOrderId: null,
       weight: '', height: '', startDate: getTodayLocal(), startTime: '14:00', durationDays: 1, packageCode: '', prepVol: '', rate: '', calcAdminVol: 0,
       lipid: '',
@@ -1408,7 +1441,13 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
   const handleRevise = () => {
     if (formData.status === 'Dispensed') return showAlert('藥師已調配，禁止直接修改！請聯繫藥局。');
     setFormData(prev => ({
-      ...prev, orderId: generateId('TPN'), version: prev.version + 1, status: 'Draft', parentOrderId: prev.orderId, date: new Date().toISOString()
+      ...prev, 
+      // ✅ 修改點：修改處方時也給予新的特定規則流水號
+      orderId: generateOrderId(prev.encounterId, db.orders), 
+      version: prev.version + 1, 
+      status: 'Draft', 
+      parentOrderId: prev.orderId, 
+      date: new Date().toISOString()
     }));
   };
 
