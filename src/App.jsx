@@ -1171,6 +1171,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
 
   const isReadOnly = formData.status !== 'Draft';
   const [validationErrors, setValidationErrors] = useState({});
+  const [confirmCancel, setConfirmCancel] = useState(false); // 新增：用於取代會被阻擋的 confirm() 視窗
   
   const ageDays = getAgeInDays(patient?.dob, formData.startDate);
 
@@ -1417,7 +1418,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
       apiSync('saveRecord', 'orders', 'orderId', finalOrder, () => {
         setDb(prev => {
           let newOrders = [...prev.orders];
-          if (newStatus === 'Submitted' && finalOrder.parentOrderId) {
+          if (newStatus === 'Submitted' && finalOrder.parentOrderId && formData.status === 'Draft') {
             newOrders = newOrders.map(o => String(o.orderId) === String(finalOrder.parentOrderId) ? { ...o, status: 'Void' } : o);
           }
           const existingIdx = newOrders.findIndex(o => String(o.orderId) === String(finalOrder.orderId));
@@ -1428,7 +1429,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
       });
     };
 
-    if (newStatus === 'Submitted' && finalOrder.parentOrderId) {
+    if (newStatus === 'Submitted' && finalOrder.parentOrderId && formData.status === 'Draft') {
       const oldOrder = db.orders.find(o => String(o.orderId) === String(finalOrder.parentOrderId));
       if (oldOrder) {
         apiSync('saveRecord', 'orders', 'orderId', { ...oldOrder, status: 'Void' }, saveNewOrder);
@@ -1436,6 +1437,27 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
       }
     }
     saveNewOrder();
+  };
+
+  // === 新增：獨立的取消調配邏輯 (確保單純且不干擾主流程) ===
+  const handleCancelDispense = () => {
+    // 移除原有的 confirm()，改由 UI 按鈕狀態控制，避免在預覽環境中被阻擋導致無反應
+    let finalOrder = { 
+      ...formData, 
+      status: 'Submitted', // 改回醫師完成
+      dispenserId: '',     // 清空調配藥師資訊 (GAS 將會覆寫覆蓋)
+      dispenserName: '',
+      date: new Date().toISOString() 
+    };
+    
+    apiSync('saveRecord', 'orders', 'orderId', finalOrder, () => {
+      setDb(prev => ({
+        ...prev, 
+        orders: prev.orders.map(o => String(o.orderId) === String(finalOrder.orderId) ? finalOrder : o)
+      }));
+      showAlert('調配已取消，處方狀態已退回「醫師完成」。');
+      onBack();
+    });
   };
 
   const handleRevise = () => {
@@ -1922,6 +1944,24 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                 </button>
               )}
             </>
+          )}
+          {/* === 新增：取消調配按鈕 === */}
+          {formData.status === 'Dispensed' && user.role === 'pharmacist' && (
+            confirmCancel ? (
+              <div className="flex items-center gap-3 bg-red-50 px-4 py-2 rounded-xl border-2 border-red-200 animate-in fade-in zoom-in duration-200">
+                <span className="text-red-700 font-bold text-sm">確定要取消調配？</span>
+                <button onClick={handleCancelDispense} className="bg-red-600 text-white px-5 py-2 rounded-lg font-black hover:bg-red-500 transition shadow">
+                  確認取消
+                </button>
+                <button onClick={() => setConfirmCancel(false)} className="bg-gray-400 text-white px-5 py-2 rounded-lg font-black hover:bg-gray-500 transition shadow">
+                  返回
+                </button>
+              </div>
+            ) : (
+              <button onClick={() => setConfirmCancel(true)} className="bg-red-500 text-white px-8 py-3 rounded-xl font-black hover:bg-red-400 transition shadow-lg flex items-center gap-2 text-lg transform hover:scale-105">
+                <XCircle size={22}/> 取消調配
+              </button>
+            )
           )}
         </div>
       </div>
