@@ -1172,7 +1172,8 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
   const isReadOnly = formData.status !== 'Draft';
   const [validationErrors, setValidationErrors] = useState({});
   const [confirmCancel, setConfirmCancel] = useState(false); // 新增：用於取代會被阻擋的 confirm() 視窗
-  
+  const [isExporting, setIsExporting] = useState(false); // 新增：用於控制匯出狀態
+
   const ageDays = getAgeInDays(patient?.dob, formData.startDate);
 
   useEffect(() => {
@@ -1481,6 +1482,51 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
       });
     }
   };
+
+  // === 新增：匯出標籤資料到 GAS ===
+  const handleExportLabel = async () => {
+    const exportData = {
+      name: patient?.name || '',
+      mm: patient?.mrn || '',
+      encounterId: admission?.encounterId || '',
+      bed: admission?.bed || '',
+      startDate: formData.startDate || '',
+      packageCode: formData.packageCode || '',
+      prepVol: formData.prepVol || '',
+    };
+
+    // 抓取成分處方濃度
+    ELEMENTS.forEach(el => {
+      exportData[el.key] = Number(formData.elements[el.key]?.conc || 0).toFixed(1);
+    });
+
+    // 動態抓取調配藥品體積
+    db.medications.forEach(med => {
+      const vol = evaluateFormula(med.formula, formData);
+      // 利用藥品的 id 作為 key (如: med-defaut01)
+      exportData[med.id] = typeof vol === 'number' && !isNaN(vol) ? Number(vol.toFixed(2)) : 0;
+    });
+
+    setIsExporting(true);
+    try {
+      const response = await fetch(GAS_URL, {
+        method: 'POST',
+        body: JSON.stringify({ action: 'exportLabel', data: exportData })
+      });
+      const result = await response.json();
+      if (result.success) {
+        showAlert('標籤資料已成功匯出至 Google Sheets！');
+      } else {
+        throw new Error(result.error || '匯出失敗');
+      }
+    } catch (error) {
+      console.warn("匯出標籤錯誤", error);
+      showAlert('匯出標籤失敗，請檢查網路連線或 GAS 設定。');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+  // ======================================
 
   const renderDispensingSimulation = () => {
     let totalMedsVol = 0;
@@ -1917,6 +1963,18 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
           )}
         </div>
         <div className="flex gap-4">
+
+          {/* === 新增：匯出標籤按鈕 (僅藥師且為非草稿狀態時顯示) === */}
+          {user.role === 'pharmacist' && formData.status !== 'Draft' && (
+            <button 
+              onClick={handleExportLabel}
+              disabled={isExporting}
+              className="bg-indigo-600 text-white px-8 py-3 rounded-xl font-black hover:bg-indigo-500 transition shadow-lg flex items-center gap-2 text-lg disabled:opacity-50 transform hover:scale-105"
+            >
+              <FileText size={22}/> {isExporting ? '匯出中...' : '匯出標籤'}
+            </button>
+          )}
+          
           {!isReadOnly && (
             <>
               {!formData.parentOrderId && (
@@ -1945,7 +2003,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
               )}
             </>
           )}
-          {/* === 新增：取消調配按鈕 === */}
+          {/* 取消調配按鈕 */}
           {formData.status === 'Dispensed' && user.role === 'pharmacist' && (
             confirmCancel ? (
               <div className="flex items-center gap-3 bg-red-50 px-4 py-2 rounded-xl border-2 border-red-200 animate-in fade-in zoom-in duration-200">
