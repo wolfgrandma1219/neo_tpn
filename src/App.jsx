@@ -1892,7 +1892,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                 // 根據項目與體重計算每公斤劑量
                 if (item.key === 'znso4' && wt > 0 && doseVal > 0) {
                   const mcgPerKg = (doseVal * 1.35 * 1000) / wt;
-                  calcDisplay = `${mcgPerKg.toFixed(1)} mcg/kg`;
+                  calcDisplay = `${mcgPerKg.toFixed(2)} mcg/kg`; // ✅ 修改點 1：將結果顯示改為小數後兩位
                 } else if (item.key === 'peditrace' && wt > 0 && doseVal > 0) {
                   const mlPerKg = doseVal / wt;
                   calcDisplay = `${mlPerKg.toFixed(2)} mL/kg`;
@@ -1910,7 +1910,8 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                       <div className="flex items-center gap-2 border-b-2 border-gray-300 pb-1 focus-within:border-blue-500 transition-colors">
                         <input 
                           type="number" 
-                          step={item.key === 'heparin' ? "1" : "0.1"} 
+                          // ✅ 修改點 2：動態判斷，若為 znso4 則 step 調整為 0.01 允許雙位小數操作
+                          step={item.key === 'heparin' ? "1" : (item.key === 'znso4' ? "0.01" : "0.1")} 
                           value={val} 
                           onChange={e => {
                             let valStr = e.target.value;
@@ -1919,6 +1920,9 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
                               const parts = valStr.split('.');
                               if (item.key === 'heparin') {
                                 valStr = parts[0]; // Heparin 僅限整數
+                              } else if (item.key === 'znso4') {
+                                // ✅ 修改點 3：針對 znso4 開放字串長度截斷至小數點後 2 位
+                                valStr = parts[0] + '.' + parts[1].substring(0, 2);
                               } else {
                                 valStr = parts[0] + '.' + parts[1].substring(0, 1); // 其他限制小數點後 1 位
                               }
