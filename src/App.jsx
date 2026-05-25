@@ -167,6 +167,10 @@ export default function App() {
   const [view, setView] = useState('login');
   const [isSyncing, setIsSyncing] = useState(false);
   
+  // --- 新增：修改密碼相關狀態 ---
+  const [showPwdChange, setShowPwdChange] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  
   const [db, setDb] = useState({
     users: INITIAL_USERS,
     limits: INITIAL_LIMITS,
@@ -298,6 +302,27 @@ export default function App() {
     }
   };
 
+  // --- 新增：修改密碼邏輯 ---
+  const handleChangePassword = () => {
+    if (!newPassword.trim()) {
+      showAlert('密碼不能為空白');
+      return;
+    }
+    const updatedUser = { ...user, password: newPassword.trim() };
+    
+    // 使用現成的 saveRecord 機制，傳入完整的 updatedUser 覆寫該筆記錄
+    apiSync('saveRecord', 'users', 'id', updatedUser, () => {
+      setDb(p => ({
+        ...p,
+        users: p.users.map(u => String(u.id) === String(user.id) ? updatedUser : u)
+      }));
+      setUser(updatedUser);
+      setShowPwdChange(false);
+      setNewPassword('');
+      showAlert('密碼已成功更新！');
+    });
+  };
+
   const AlertBanner = () => alertMsg && (
     <div className="fixed top-4 left-1/2 transform -translate-x-1/2 bg-red-100 border-l-4 border-red-500 text-red-700 px-6 py-3 rounded shadow-xl z-50 flex items-center gap-3 transition-all duration-300">
       <AlertTriangle size={20} /> <span className="font-bold">{alertMsg}</span>
@@ -305,9 +330,37 @@ export default function App() {
   );
 
   return (
-    <div className="min-h-screen bg-gray-50 text-gray-800 font-sans pb-20">
+    <div className="min-h-screen bg-gray-50 text-gray-800 font-sans pb-20 relative">
       <AlertBanner />
       
+      {/* --- 新增：修改密碼的 Modal 視窗 --- */}
+      {showPwdChange && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white p-6 rounded-2xl shadow-xl w-80 animate-in fade-in zoom-in duration-200">
+            <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2 border-b pb-2">
+              <Lock size={20} className="text-blue-600" /> 修改登入密碼
+            </h3>
+            <div className="mb-4">
+              <label className="block text-xs font-bold text-gray-600 mb-1">新密碼 (明碼)</label>
+              <input
+                type="text"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="請輸入新密碼"
+                className="w-full border-2 p-2 rounded-lg text-gray-800 font-mono focus:border-blue-500 outline-none transition"
+                autoFocus
+              />
+            </div>
+            <div className="flex justify-end gap-3 mt-6">
+              <button onClick={() => {setShowPwdChange(false); setNewPassword('');}} className="px-4 py-2 text-gray-500 hover:bg-gray-100 rounded-lg font-bold transition">取消</button>
+              <button onClick={handleChangePassword} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold shadow transition flex items-center gap-2">
+                <Save size={16}/> 儲存
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {user && (
         <nav className="bg-blue-900 text-white p-4 shadow-md flex justify-between items-center sticky top-0 z-40">
           <div className="flex items-center gap-3 text-xl font-bold tracking-wide">
@@ -318,9 +371,19 @@ export default function App() {
             <button onClick={() => fetchAllData(true)} className="flex items-center gap-1 hover:bg-blue-700 transition text-sm font-bold bg-blue-800 px-3 py-1.5 rounded-full border border-blue-700 cursor-pointer">
               <RefreshCw size={16} className={isSyncing ? "animate-spin" : ""} /> 手動更新
             </button>
-            <span className="text-sm bg-blue-800 px-3 py-1 rounded-full border border-blue-700 shadow-inner hidden md:inline-block">
+            
+            {/* ✅ 修改點：將 inline-block 改為 inline-flex 以支援內部排版，並新增修改密碼的按鈕 */}
+            <span className="text-sm bg-blue-800 px-3 py-1 rounded-full border border-blue-700 shadow-inner hidden md:inline-flex items-center gap-2">
               {user.name} ({user.role})
+              <button 
+                onClick={() => setShowPwdChange(true)} 
+                className="hover:text-blue-300 transition focus:outline-none ml-1 flex items-center" 
+                title="修改密碼"
+              >
+                <Edit size={14} />
+              </button>
             </span>
+
             {user.role === 'admin' && (
               <button onClick={() => setView('settings')} className="hover:text-blue-200 transition"><Settings size={20}/></button>
             )}
