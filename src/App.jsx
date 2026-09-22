@@ -952,7 +952,7 @@ function CombinedAdmissionsView({ db, apiSync, setDb, showAlert, onSelect }) {
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-gray-600 mb-1">姓名</label>
-                  <input type="text" value={formData.name} onChange={e=>setFormData(prev => ({...prev, name: e.target.value}))} disabled={isExistingPt} className={`border-2 p-2 rounded-lg w-full outline-none font-bold ${isExistingPt ? 'bg-gray-100 text-gray-500 border-gray-200' : 'focus:border-blue-500'}`} maxLength={6} />
+                  <input type="text" value={formData.name} onChange={e=>setFormData(prev => ({...prev, name: e.target.value}))} disabled={isExistingPt} className={`border-2 p-2 rounded-lg w-full outline-none font-bold ${isExistingPt ? 'bg-gray-100 text-gray-500 border-gray-200' : 'focus:border-blue-500'}`} maxLength={10} />
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-gray-600 mb-1">性別</label>
