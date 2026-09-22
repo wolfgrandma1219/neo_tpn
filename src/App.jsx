@@ -1942,11 +1942,14 @@ function OrderFormView({ db, setDb, patient, admission, user, order, onBack, sho
                 const val = formData.otherAdditions[item.key];
                 const wt = parseFloat(formData.weight) || 0;
                 const doseVal = parseFloat(val) || 0;
+                const prepVol = parseFloat(formData.prepVol) || 0;
+                const adminVol = formData.calcAdminVol || 0;
                 let calcDisplay = null;
 
                 // 根據項目與體重計算每公斤劑量
-                if (item.key === 'znso4' && wt > 0 && doseVal > 0) {
-                  const mcgPerKg = (doseVal * 1.35 * 1000) / wt;
+                if (item.key === 'znso4' && wt > 0 && doseVal > 0 && prepVol > 0 && adminVol > 0) {
+                  // 依實際給藥體積比例計算：加入量 × 1.35 mg/mL × (給藥體積/調配體積) × 1000 / 體重
+                  const mcgPerKg = (doseVal * 1.35 * (adminVol / prepVol) * 1000) / wt;
                   calcDisplay = `${mcgPerKg.toFixed(2)} mcg/kg`; // ✅ 修改點 1：將結果顯示改為小數後兩位
                 } else if (item.key === 'peditrace' && wt > 0 && doseVal > 0) {
                   const mlPerKg = doseVal / wt;
