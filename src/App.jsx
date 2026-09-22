@@ -5,14 +5,9 @@ import {
   Edit, AlertTriangle, Syringe, Trash2, CloudUpload,
   Beaker, Calculator, Activity, RefreshCw, ShieldCheck
 } from 'lucide-react';
+import { callGas, AuthError, loadSession, saveSession } from './api/gasClient';
 
-// === 未來串接 Google Apps Script 的網址請填入此處 ===
-const GAS_URL = "https://script.google.com/macros/s/AKfycbw9_vt0R-rAUt8sAjSlquSUMk7l98Nf5ZcQnuDeXUNDjbQOfKrsTowpEsnnUSfZzvFu/exec";
-
-// --- 系統預設防呆資料 (防止資料庫完全空白時系統崩潰或無法登入) ---
-const INITIAL_USERS = [
-  { id: 'u1', username: 'admin', password: '123', role: 'admin', name: '系統管理員' } // 僅保留管理員，避免空資料庫時無法登入建立其他帳號
-];
+// --- 系統預設防呆資料 (防止資料庫完全空白時系統崩潰) ---
 
 // LIMITS 結構為介面渲染必須，保留作為預設基底
 const INITIAL_LIMITS = {
@@ -162,143 +157,160 @@ const evaluateCondition = (conditionString, formData) => {
   }
 };
 
+const EMPTY_DB = {
+  users: [],
+  limits: INITIAL_LIMITS,
+  packages: INITIAL_PACKAGES,
+  medications: [],
+  auditRules: [],
+  patients: [],
+  admissions: [],
+  orders: []
+};
+
+const homeViewFor = (role) => role === 'admin' ? 'settings' : role === 'pharmacist' ? 'globalOrders' : 'patients';
+
 export default function App() {
-  const [user, setUser] = useState(null);
-  const [view, setView] = useState('login');
+  const [session, setSession] = useState(loadSession); // { token, user }
+  const user = session?.user || null;
+  const token = session?.token;
+  const [view, setView] = useState(() => user ? homeViewFor(user.role) : 'login');
   const [isSyncing, setIsSyncing] = useState(false);
+  const [dataLoaded, setDataLoaded] = useState(false);
+  const [loadError, setLoadError] = useState('');
   
   // --- 新增：修改密碼相關狀態 ---
   const [showPwdChange, setShowPwdChange] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   
-  const [db, setDb] = useState({
-    users: INITIAL_USERS,
-    limits: INITIAL_LIMITS,
-    packages: INITIAL_PACKAGES,
-    medications: [], 
-    auditRules: [],
-    patients: [],
-    admissions: [],
-    orders: []
-  });
+  const [db, setDb] = useState(EMPTY_DB);
 
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [selectedAdmission, setSelectedAdmission] = useState(null);
   const [editingOrder, setEditingOrder] = useState(null);
   const [alertMsg, setAlertMsg] = useState('');
 
-  const showAlert = (msg) => {
+  const showAlert = useCallback((msg) => {
     setAlertMsg(msg);
     setTimeout(() => setAlertMsg(''), 4000);
-  };
-
-  const fetchAllData = useCallback(async (showLoading = true) => {
-    if (showLoading) setIsSyncing(true);
-    try {
-      const response = await fetch(GAS_URL, {
-        method: 'POST',
-        body: JSON.stringify({ action: 'getAllData' })
-      });
-      const result = await response.json();
-      
-      if (result.success) {
-        const fetchedLimits = result.data.limits || {};
-        const safeLimits = Object.keys(fetchedLimits).length > 0 ? { ...INITIAL_LIMITS, ...fetchedLimits } : INITIAL_LIMITS;
-        
-        const normalizedPatients = (result.data.patients || []).map(p => ({ ...p, dob: cleanDateString(p.dob) }));
-        const normalizedAdmissions = (result.data.admissions || []).map(a => ({ ...a, adminDate: cleanDateString(a.adminDate), dischargeDate: cleanDateString(a.dischargeDate) }));
-        const normalizedOrders = (result.data.orders || []).map(o => ({ 
-          ...o, 
-          startDate: cleanDateString(o.startDate),
-          startTime: cleanTimeString(o.startTime)
-        }));
-
-        const rawMedications = result.data.medications || result.data.Medications || [];
-        const normalizedMedications = rawMedications.filter(m => m.id || m.ID).map(m => {
-          const rawIsActive = m.isActive !== undefined ? m.isActive : m.IsActive;
-          return {
-            ...m,
-            id: m.id || m.ID,
-            name: m.name || m.Name || '',
-            formula: m.formula || m.Formula || '',
-            unit: m.unit || m.Unit || 'mL',
-            seq: Number(m.seq || m.Seq || 0),
-            isActive: rawIsActive === undefined ? true : (rawIsActive === true || String(rawIsActive).toLowerCase() === 'true')
-          };
-        });
-
-        const rawAuditRules = result.data.auditRules || result.data.AuditRules || [];
-        const normalizedAuditRules = rawAuditRules.filter(r => r.id || r.ID).map(r => {
-          const rawIsActive = r.isActive !== undefined ? r.isActive : r.IsActive;
-          return {
-            ...r, 
-            id: r.id || r.ID,
-            condition: r.condition || r.Condition || '',
-            description: r.description || r.Description || '',
-            isActive: rawIsActive === undefined ? true : (rawIsActive === true || String(rawIsActive).toLowerCase() === 'true')
-          };
-        });
-
-        setDb({
-          users: result.data.users?.length > 0 ? result.data.users : INITIAL_USERS,
-          limits: safeLimits,
-          packages: result.data.packages?.length > 0 ? result.data.packages : INITIAL_PACKAGES,
-          medications: normalizedMedications, 
-          auditRules: normalizedAuditRules,
-          patients: normalizedPatients,
-          admissions: normalizedAdmissions,
-          orders: normalizedOrders
-        });
-      } else {
-        throw new Error(result.error);
-      }
-    } catch (error) {
-      console.warn("連線錯誤，使用預設或快取資料繼續運行。");
-      if (showLoading) showAlert(`無法連線至資料庫，使用預設或快取資料。`);
-    } finally {
-      setIsSyncing(false);
-    }
   }, []);
 
-  const apiSync = async (action, table, pk, data, successCallback) => {
+  const logout = useCallback((msg) => {
+    saveSession(null);
+    setSession(null);
+    setDb(EMPTY_DB);
+    setDataLoaded(false);
+    setLoadError('');
+    setView('login');
+    if (msg) showAlert(msg);
+  }, [showAlert]);
+
+  const fetchAllData = useCallback(async (showLoading = true) => {
+    if (!token) return;
+    if (showLoading) setIsSyncing(true);
+    try {
+      const data = await callGas('getAllData', {}, token);
+      const fetchedLimits = data.limits || {};
+      const safeLimits = Object.keys(fetchedLimits).length > 0 ? { ...INITIAL_LIMITS, ...fetchedLimits } : INITIAL_LIMITS;
+
+      const normalizedPatients = (data.patients || []).map(p => ({ ...p, dob: cleanDateString(p.dob) }));
+      const normalizedAdmissions = (data.admissions || []).map(a => ({ ...a, adminDate: cleanDateString(a.adminDate), dischargeDate: cleanDateString(a.dischargeDate) }));
+      const normalizedOrders = (data.orders || []).map(o => ({ 
+        ...o, 
+        startDate: cleanDateString(o.startDate),
+        startTime: cleanTimeString(o.startTime)
+      }));
+
+      const rawMedications = data.medications || data.Medications || [];
+      const normalizedMedications = rawMedications.filter(m => m.id || m.ID).map(m => {
+        const rawIsActive = m.isActive !== undefined ? m.isActive : m.IsActive;
+        return {
+          ...m,
+          id: m.id || m.ID,
+          name: m.name || m.Name || '',
+          formula: m.formula || m.Formula || '',
+          unit: m.unit || m.Unit || 'mL',
+          seq: Number(m.seq || m.Seq || 0),
+          isActive: rawIsActive === undefined ? true : (rawIsActive === true || String(rawIsActive).toLowerCase() === 'true')
+        };
+      });
+
+      const rawAuditRules = data.auditRules || data.AuditRules || [];
+      const normalizedAuditRules = rawAuditRules.filter(r => r.id || r.ID).map(r => {
+        const rawIsActive = r.isActive !== undefined ? r.isActive : r.IsActive;
+        return {
+          ...r, 
+          id: r.id || r.ID,
+          condition: r.condition || r.Condition || '',
+          description: r.description || r.Description || '',
+          isActive: rawIsActive === undefined ? true : (rawIsActive === true || String(rawIsActive).toLowerCase() === 'true')
+        };
+      });
+
+      setDb({
+        users: data.users || [],
+        limits: safeLimits,
+        packages: data.packages?.length > 0 ? data.packages : INITIAL_PACKAGES,
+        medications: normalizedMedications, 
+        auditRules: normalizedAuditRules,
+        patients: normalizedPatients,
+        admissions: normalizedAdmissions,
+        orders: normalizedOrders
+      });
+      setDataLoaded(true);
+      setLoadError('');
+    } catch (error) {
+      if (error instanceof AuthError) return logout(error.message);
+      console.warn("資料同步失敗:", error);
+      if (showLoading) {
+        setLoadError(error.message);
+        showAlert(`無法連線至資料庫：${error.message}`);
+      }
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [token, logout, showAlert]);
+
+  // 成功時呼叫 onSuccess(後端回傳的 data) 並回傳 true；失敗時不更新畫面、提示錯誤並回傳 false
+  const apiRequest = async (action, payload, onSuccess) => {
     setIsSyncing(true);
     try {
-      const response = await fetch(GAS_URL, {
-        method: 'POST',
-        body: JSON.stringify({ action, table, pk, data })
-      });
-      const result = await response.json();
-      if (!result.success) throw new Error(result.error);
-      
-      await new Promise(resolve => setTimeout(resolve, 300));
-      successCallback();
-      
+      const data = await callGas(action, payload, token);
+      if (onSuccess) onSuccess(data);
+      return true;
     } catch (error) {
-      console.warn("API 連線錯誤，繼續以本地模式運行。");
-      showAlert(`連線存檔失敗: 進入本地離線模式`);
-      successCallback(); 
+      if (error instanceof AuthError) logout(error.message);
+      else showAlert(`存檔失敗，資料未儲存：${error.message}`);
+      return false;
     } finally {
       setIsSyncing(false);
     }
   };
 
+  const apiSync = (action, table, pk, data, successCallback) =>
+    apiRequest(action, { table, pk, data }, successCallback);
+
   useEffect(() => {
+    if (!token) return;
     fetchAllData(true);
     const intervalId = setInterval(() => {
       fetchAllData(false);
     }, 60000);
     return () => clearInterval(intervalId);
-  }, [fetchAllData]);
+  }, [token, fetchAllData]);
 
-  const handleLogin = (username, password) => {
-    const found = db.users.find(u => String(u.username) === String(username) && String(u.password) === String(password));
-    if (found) {
-      setUser(found);
-      if (found.role === 'admin') setView('settings');
-      else if (found.role === 'pharmacist') setView('globalOrders');
-      else setView('patients');
-    } else {
-      showAlert('帳號或密碼錯誤');
+  const handleLogin = async (username, password) => {
+    setIsSyncing(true);
+    try {
+      const result = await callGas('login', { username, password });
+      const newSession = { token: result.token, user: result.user };
+      saveSession(newSession);
+      setSession(newSession);
+      setView(homeViewFor(result.user.role));
+    } catch (error) {
+      showAlert(error.message);
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -308,15 +320,7 @@ export default function App() {
       showAlert('密碼不能為空白');
       return;
     }
-    const updatedUser = { ...user, password: newPassword.trim() };
-    
-    // 使用現成的 saveRecord 機制，傳入完整的 updatedUser 覆寫該筆記錄
-    apiSync('saveRecord', 'users', 'id', updatedUser, () => {
-      setDb(p => ({
-        ...p,
-        users: p.users.map(u => String(u.id) === String(user.id) ? updatedUser : u)
-      }));
-      setUser(updatedUser);
+    apiRequest('changePassword', { newPassword: newPassword.trim() }, () => {
       setShowPwdChange(false);
       setNewPassword('');
       showAlert('密碼已成功更新！');
@@ -387,7 +391,7 @@ export default function App() {
             {user.role === 'admin' && (
               <button onClick={() => setView('settings')} className="hover:text-blue-200 transition"><Settings size={20}/></button>
             )}
-            <button onClick={() => { setUser(null); setView('login'); }} className="hover:text-red-300 text-sm font-semibold transition">
+            <button onClick={() => logout()} className="hover:text-red-300 text-sm font-semibold transition">
               登出
             </button>
           </div>
@@ -395,12 +399,27 @@ export default function App() {
       )}
 
       <main className="p-4 md:p-6 max-w-7xl mx-auto">
-        {view === 'login' && <LoginView onLogin={handleLogin} />}
+        {!user && <LoginView onLogin={handleLogin} isSubmitting={isSyncing} />}
+        {user && !dataLoaded && (
+          <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4 text-gray-500 font-bold">
+            {loadError ? (
+              <>
+                <AlertTriangle size={40} className="text-red-500" />
+                <p>無法載入資料：{loadError}</p>
+                <button onClick={() => fetchAllData(true)} className="bg-blue-700 text-white px-5 py-2 rounded-xl hover:bg-blue-800 shadow">重試</button>
+              </>
+            ) : (
+              <><RefreshCw size={32} className="animate-spin text-blue-600" /> 資料載入中...</>
+            )}
+          </div>
+        )}
+        {user && dataLoaded && <>
         {view === 'settings' && <SettingsView db={db} setDb={setDb} apiSync={apiSync} showAlert={showAlert} />}
         {view === 'patients' && <CombinedAdmissionsView db={db} setDb={setDb} apiSync={apiSync} showAlert={showAlert} onSelect={(p, a) => { setSelectedPatient(p); setSelectedAdmission(a); setView('orders'); }} />}
         {view === 'orders' && <OrdersView db={db} setDb={setDb} apiSync={apiSync} patient={selectedPatient} admission={selectedAdmission} user={user} onBack={() => setView('patients')} onEdit={(o) => { setEditingOrder(o); setView('orderForm'); }} showAlert={showAlert} />}
         {view === 'globalOrders' && <GlobalOrdersView db={db} user={user} onEdit={(o, p, a) => { setEditingOrder(o); setSelectedPatient(p); setSelectedAdmission(a); setView('orderForm'); }} />}
-        {view === 'orderForm' && <OrderFormView db={db} setDb={setDb} apiSync={apiSync} patient={selectedPatient} admission={selectedAdmission} user={user} order={editingOrder} onBack={() => setView(user.role === 'pharmacist' ? 'globalOrders' : 'orders')} showAlert={showAlert} />}
+        {view === 'orderForm' && <OrderFormView db={db} setDb={setDb} apiSync={apiSync} patient={selectedPatient} admission={selectedAdmission} user={user} order={editingOrder} onBack={() => setView(user.role === 'pharmacist' ? 'globalOrders' : 'orders')} showAlert={showAlert} apiRequest={apiRequest} />}
+        </>}
       </main>
     </div>
   );
@@ -409,7 +428,7 @@ export default function App() {
 // ==========================================
 // 1. 登入畫面
 // ==========================================
-function LoginView({ onLogin }) {
+function LoginView({ onLogin, isSubmitting }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   return (
@@ -432,8 +451,8 @@ function LoginView({ onLogin }) {
               <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full pl-10 pr-3 py-2 border-2 rounded-xl focus:ring-0 focus:border-blue-500 outline-none transition" required />
             </div>
           </div>
-          <button type="submit" className="w-full bg-blue-700 text-white py-3 rounded-xl hover:bg-blue-800 font-bold text-lg shadow-lg hover:shadow-xl transition-all transform hover:-translate-y-0.5 mt-2">
-            登入系統
+          <button type="submit" disabled={isSubmitting} className="w-full disabled:opacity-60 bg-blue-700 text-white py-3 rounded-xl hover:bg-blue-800 font-bold text-lg shadow-lg hover:shadow-xl transition-all transform hover:-translate-y-0.5 mt-2">
+            {isSubmitting ? '登入中...' : '登入系統'}
           </button>
         </form>
       </div>
@@ -453,8 +472,6 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
   const [editingRuleId, setEditingRuleId] = useState(null);
   const [editingRuleData, setEditingRuleData] = useState({});
 
-  useEffect(() => { setLocalLimits(db.limits); }, [db.limits]);
-
   const handleSaveLimits = () => {
     apiSync('saveRecord', 'limits', 'element', localLimits, () => {
       setDb(p => ({ ...p, limits: localLimits }));
@@ -466,10 +483,18 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
     if (!newUser.username || !newUser.password || !newUser.name) return showAlert('請填寫完整資訊');
     if (db.users.find(u => String(u.username) === String(newUser.username))) return showAlert('此帳號已存在');
     const userToAdd = { id: generateId('u'), ...newUser };
-    apiSync('saveRecord', 'users', 'id', userToAdd, () => {
-      setDb(p => ({ ...p, users: [...p.users, userToAdd] }));
+    apiSync('saveRecord', 'users', 'id', userToAdd, (result) => {
+      setDb(p => ({ ...p, users: [...p.users, result.user] }));
       setNewUser({ username: '', password: '', role: 'doctor', name: '' });
       showAlert('操作者已新增');
+    });
+  };
+
+  const handleResetPassword = (u) => {
+    const pwd = prompt(`請輸入 ${u.username} 的新密碼`);
+    if (!pwd || !pwd.trim()) return;
+    apiSync('saveRecord', 'users', 'id', { ...u, password: pwd.trim() }, () => {
+      showAlert(`已重設 ${u.username} 的密碼`);
     });
   };
 
@@ -752,13 +777,12 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
         <div className="bg-white rounded-lg border overflow-hidden shadow-sm">
           <table className="w-full text-left text-sm">
             <thead className="bg-gray-100">
-              <tr><th className="p-3">帳號</th><th className="p-3">密碼</th><th className="p-3">顯示名稱</th><th className="p-3">身份</th><th className="p-3 text-center">操作</th></tr>
+              <tr><th className="p-3">帳號</th><th className="p-3">顯示名稱</th><th className="p-3">身份</th><th className="p-3 text-center">操作</th></tr>
             </thead>
             <tbody className="divide-y">
               {db.users.map(u => (
                 <tr key={u.id} className="hover:bg-gray-50 transition">
                   <td className="p-3 font-bold text-gray-800">{u.username}</td>
-                  <td className="p-3 text-gray-400 font-mono text-xs">{u.password}</td>
                   <td className="p-3 font-bold text-gray-800">{u.name}</td>
                   <td className="p-3">
                     <span className={`px-3 py-1 rounded-full text-xs font-bold border ${
@@ -770,6 +794,7 @@ function SettingsView({ db, setDb, apiSync, showAlert }) {
                     </span>
                   </td>
                   <td className="p-3 text-center">
+                    <button onClick={() => handleResetPassword(u)} className="text-gray-400 hover:text-blue-600 p-2 rounded hover:bg-blue-50 transition" title="重設密碼"><Lock size={18}/></button>
                     {u.username !== 'admin' && (
                       <button onClick={() => handleDeleteUser(u.id)} className="text-red-400 hover:text-red-600 p-2 rounded hover:bg-red-50 transition"><Trash2 size={18}/></button>
                     )}
@@ -1202,7 +1227,7 @@ function OrderTable({ orders, patientName, onEdit, isGlobal }) {
 // ==========================================
 // 6. 處方開立/編輯表單核心邏輯
 // ==========================================
-function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, onBack, showAlert }) {
+function OrderFormView({ db, setDb, patient, admission, user, order, onBack, showAlert, apiRequest }) {
   const [formData, setFormData] = useState(() => {
     if (order) {
       const parsed = JSON.parse(JSON.stringify(order));
@@ -1233,6 +1258,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
   });
 
   const isReadOnly = formData.status !== 'Draft';
+  const [isNewRecord, setIsNewRecord] = useState(!order); // 尚未存進後端的新單或新版
   const [validationErrors, setValidationErrors] = useState({});
   const [confirmCancel, setConfirmCancel] = useState(false); // 新增：用於取代會被阻擋的 confirm() 視窗
   const [isExporting, setIsExporting] = useState(false); // 新增：用於控制匯出狀態
@@ -1468,39 +1494,24 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
     return true;
   };
 
+  // 所有處方寫入都走後端 saveOrder：新單由後端產生正式單號；送出新版時後端在同一個 lock 內作廢舊版
+  const persistOrder = (orderToSave, onSaved) =>
+    apiRequest('saveOrder', { order: orderToSave, isNew: isNewRecord }, (result) => {
+      setDb(prev => {
+        let newOrders = result.voidedParentId
+          ? prev.orders.map(o => String(o.orderId) === String(result.voidedParentId) ? { ...o, status: 'Void' } : o)
+          : [...prev.orders];
+        const existingIdx = newOrders.findIndex(o => String(o.orderId) === String(result.order.orderId));
+        if (existingIdx >= 0) newOrders[existingIdx] = result.order; else newOrders.push(result.order);
+        return { ...prev, orders: newOrders };
+      });
+      onSaved(result.order);
+    });
+
   const saveOrder = (newStatus) => {
     if (newStatus === 'Submitted' && !validateOrder()) return;
-    let finalOrder = { ...formData, status: newStatus, date: new Date().toISOString() };
-
-    // === 新增：如果由藥師確認調配，寫入調配藥師資訊 ===
-    if (newStatus === 'Dispensed' && user.role === 'pharmacist') {
-      finalOrder.dispenserId = user.id;
-      finalOrder.dispenserName = user.name;
-    }
-
-    const saveNewOrder = () => {
-      apiSync('saveRecord', 'orders', 'orderId', finalOrder, () => {
-        setDb(prev => {
-          let newOrders = [...prev.orders];
-          if (newStatus === 'Submitted' && finalOrder.parentOrderId && formData.status === 'Draft') {
-            newOrders = newOrders.map(o => String(o.orderId) === String(finalOrder.parentOrderId) ? { ...o, status: 'Void' } : o);
-          }
-          const existingIdx = newOrders.findIndex(o => String(o.orderId) === String(finalOrder.orderId));
-          if (existingIdx >= 0) newOrders[existingIdx] = finalOrder; else newOrders.push(finalOrder);
-          return { ...prev, orders: newOrders };
-        });
-        onBack();
-      });
-    };
-
-    if (newStatus === 'Submitted' && finalOrder.parentOrderId && formData.status === 'Draft') {
-      const oldOrder = db.orders.find(o => String(o.orderId) === String(finalOrder.parentOrderId));
-      if (oldOrder) {
-        apiSync('saveRecord', 'orders', 'orderId', { ...oldOrder, status: 'Void' }, saveNewOrder);
-        return;
-      }
-    }
-    saveNewOrder();
+    // 調配藥師 (dispenserId/Name) 與新單的開立者由後端依登入身分寫入
+    persistOrder({ ...formData, status: newStatus, date: new Date().toISOString() }, () => onBack());
   };
 
   // === 新增：獨立的取消調配邏輯 (確保單純且不干擾主流程) ===
@@ -1514,11 +1525,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
       date: new Date().toISOString() 
     };
     
-    apiSync('saveRecord', 'orders', 'orderId', finalOrder, () => {
-      setDb(prev => ({
-        ...prev, 
-        orders: prev.orders.map(o => String(o.orderId) === String(finalOrder.orderId) ? finalOrder : o)
-      }));
+    persistOrder(finalOrder, () => {
       showAlert('調配已取消，處方狀態已退回「醫師完成」。');
       onBack();
     });
@@ -1526,6 +1533,7 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
 
   const handleRevise = () => {
     if (formData.status === 'Dispensed') return showAlert('藥師已調配，禁止直接修改！請聯繫藥局。');
+    setIsNewRecord(true);
     setFormData(prev => ({
       ...prev, 
       // ✅ 修改點：修改處方時也給予新的特定規則流水號
@@ -1539,10 +1547,8 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
 
   const handleDelete = () => {
     if (confirm('確定要刪除此暫存處方嗎？')) {
-      apiSync('saveRecord', 'orders', 'orderId', { ...formData, status: 'Deleted' }, () => {
-        setDb(prev => ({ ...prev, orders: prev.orders.map(o => String(o.orderId) === String(formData.orderId) ? { ...o, status: 'Deleted' } : o) }));
-        onBack();
-      });
+      if (isNewRecord) return onBack(); // 尚未存檔過，直接離開即可
+      persistOrder({ ...formData, status: 'Deleted' }, () => onBack());
     }
   };
 
@@ -1571,23 +1577,9 @@ function OrderFormView({ db, setDb, apiSync, patient, admission, user, order, on
     });
 
     setIsExporting(true);
-    try {
-      const response = await fetch(GAS_URL, {
-        method: 'POST',
-        body: JSON.stringify({ action: 'exportLabel', data: exportData })
-      });
-      const result = await response.json();
-      if (result.success) {
-        showAlert('標籤資料已成功匯出至 Google Sheets！');
-      } else {
-        throw new Error(result.error || '匯出失敗');
-      }
-    } catch (error) {
-      console.warn("匯出標籤錯誤", error);
-      showAlert('匯出標籤失敗，請檢查網路連線或 GAS 設定。');
-    } finally {
-      setIsExporting(false);
-    }
+    const ok = await apiRequest('exportLabel', { data: exportData });
+    setIsExporting(false);
+    if (ok) showAlert('標籤資料已成功匯出至 Google Sheets！');
   };
   // ======================================
 
