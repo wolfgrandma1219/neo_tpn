@@ -48,6 +48,9 @@ const OTHER_ADDITIONS = [
   { key: 'peditrace', label: 'Peditrace', unit: 'mL' }
 ];
 
+// 處方套餐被手動修改後的後綴；舊醫囑存的是 -modified，一併相容
+const MODIFIED_SUFFIX_RE = /-(modified|調整)$/;
+
 const generateId = (prefix) => `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
 // --- 新增：自訂處方單號生成邏輯 (TPN-就醫序號-日期-流水號) ---
@@ -1370,7 +1373,7 @@ function OrderFormView({ db, setDb, patient, admission, user, order, onBack, sho
       const newState = { ...prev, packageCode: newPkgCode };
       if (newPkgCode && newPkgCode !== 'C01') {
         const pkg = db.packages.find(p => String(p.code) === String(newPkgCode));
-        if(!pkg) return newState; // 當選到 -modified 的項目，跳過重設元素直接返回
+        if(!pkg) return newState; // 當選到 -調整 的項目，跳過重設元素直接返回
         
         const newElements = { ...prev.elements };
         const volL = prev.calcAdminVol ? prev.calcAdminVol / 1000 : 0;
@@ -1435,10 +1438,10 @@ function OrderFormView({ db, setDb, patient, admission, user, order, onBack, sho
         }
       }
 
-      // --- 判斷並寫入 -modified ---
+      // --- 判斷並寫入 -調整 ---
       let newPackageCode = prev.packageCode;
-      if (newPackageCode && newPackageCode !== 'C01' && !newPackageCode.endsWith('-modified')) {
-        newPackageCode = `${newPackageCode}-modified`;
+      if (newPackageCode && newPackageCode !== 'C01' && !MODIFIED_SUFFIX_RE.test(newPackageCode)) {
+        newPackageCode = `${newPackageCode}-調整`;
       } else if (!newPackageCode) {
         newPackageCode = 'C01';
       }
@@ -1747,7 +1750,7 @@ function OrderFormView({ db, setDb, patient, admission, user, order, onBack, sho
                   <select value={formData.packageCode} onChange={handlePackageChange} disabled={isReadOnly} className="w-full border-2 p-3 rounded-xl focus:border-blue-500 outline-none font-bold disabled:bg-gray-100 text-blue-900 bg-gray-50">
                     <option value="">-- 請選擇 --</option>
                     {db.packages.map(p => <option key={p.code} value={p.code}>{p.code} - {p.name}</option>)}
-                    {/* 新增動態選項，如果 packageCode 為手動 modified 的狀態且不在清單內，長出此選項供顯示 */}
+                    {/* 新增動態選項，如果 packageCode 為手動調整的狀態且不在清單內，長出此選項供顯示 */}
                     {formData.packageCode && !db.packages.find(p => String(p.code) === String(formData.packageCode)) && (
                       <option value={formData.packageCode}>{formData.packageCode}</option>
                     )}
@@ -1825,9 +1828,9 @@ function OrderFormView({ db, setDb, patient, admission, user, order, onBack, sho
                             na: { ...p.elements.na, dose: minNa.toString(), conc: naConc }
                           };
                           
-                          // 同步套用 -modified
-                          if (newState.packageCode && newState.packageCode !== 'C01' && !newState.packageCode.endsWith('-modified')) {
-                            newState.packageCode = `${newState.packageCode}-modified`;
+                          // 同步套用 -調整
+                          if (newState.packageCode && newState.packageCode !== 'C01' && !MODIFIED_SUFFIX_RE.test(newState.packageCode)) {
+                            newState.packageCode = `${newState.packageCode}-調整`;
                           } else if (!newState.packageCode) {
                             newState.packageCode = 'C01';
                           }
@@ -1869,7 +1872,7 @@ function OrderFormView({ db, setDb, patient, admission, user, order, onBack, sho
                     // --- 新增：動態判斷是否被手動修改過 ---
                     let isModified = false;
                     if (formData.packageCode) {
-                      const basePkgCode = formData.packageCode.replace('-modified', '');
+                      const basePkgCode = formData.packageCode.replace(MODIFIED_SUFFIX_RE, '');
                       const basePkg = db.packages.find(p => String(p.code) === String(basePkgCode));
                       // 如果有選標準處方，且該項目不是純自訂(C01)，也不是系統鎖死的 Cl 和 Kcal
                       if (basePkg && basePkgCode !== 'C01' && !isCl && el.key !== 'kcal') {
